@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사이클로이드 감속기 시뮬레이터</title>
+</head>
+<body>
+<!-- ===== 티스토리 복사 시작 ===== -->
+<div id="cyc-sim-v1">
+<style>
+#cyc-sim-v1{background:#f4f6f8;border:1px solid #dfe3e8;border-radius:12px;padding:8px;color:#1f2933;font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;box-sizing:border-box;max-width:100%;line-height:1.4;text-align:left;}
+#cyc-sim-v1 *{box-sizing:border-box;}
+#cyc-sim-v1 .cs-stage{position:relative;width:100%;margin:0;padding:0;}
+#cyc-sim-v1 canvas{display:block;width:100%;height:400px;touch-action:none;cursor:grab;background:#ffffff;border-radius:8px;margin:0;padding:0;border:0;}
+#cyc-sim-v1 canvas.cs-drag{cursor:grabbing;}
+#cyc-sim-v1 .cs-views{position:absolute;top:8px;right:8px;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;max-width:70%;}
+#cyc-sim-v1 .cs-views button,#cyc-sim-v1 .cs-btns button{font:inherit;font-size:12px;line-height:1.2;margin:0;padding:5px 9px;border:1px solid #cfd5dc;border-radius:6px;background:rgba(255,255,255,.92);color:#334155;cursor:pointer;box-shadow:none;text-transform:none;letter-spacing:0;min-width:0;height:auto;width:auto;}
+#cyc-sim-v1 .cs-views button:hover,#cyc-sim-v1 .cs-btns button:hover{background:#eef2f6;}
+#cyc-sim-v1 .cs-views button.on{background:#334155;color:#fff;border-color:#334155;}
+#cyc-sim-v1 .cs-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 4px 2px;font-size:13px;margin:0;}
+#cyc-sim-v1 .cs-cfg{white-space:nowrap;color:#334155;}
+#cyc-sim-v1 .cs-tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;margin:0 2px;vertical-align:1px;}
+#cyc-sim-v1 .t-fix{background:#e2e5e9;color:#4b5360;}
+#cyc-sim-v1 .t-in{background:#fde3c6;color:#9a520f;}
+#cyc-sim-v1 .t-out{background:#d3f0dc;color:#226a3a;}
+#cyc-sim-v1 .cs-ctl{display:inline-flex;align-items:center;gap:6px;margin:0;padding:0;font-size:13px;color:#334155;white-space:nowrap;font-weight:400;}
+#cyc-sim-v1 .cs-ctl select{font:inherit;font-size:12px;padding:3px 4px;margin:0;border:1px solid #cfd5dc;border-radius:6px;background:#fff;color:#1f2933;height:auto;width:auto;}
+#cyc-sim-v1 .cs-ctl input[type=range]{width:110px;margin:0;padding:0;accent-color:#475569;height:auto;background:transparent;border:0;}
+#cyc-sim-v1 .cs-val{display:inline-block;min-width:52px;font-variant-numeric:tabular-nums;color:#1f2933;font-size:12px;}
+#cyc-sim-v1 .cs-btns{display:inline-flex;gap:6px;}
+</style>
+<div class="cs-stage">
+  <canvas></canvas>
+  <div class="cs-views">
+    <button type="button" data-v="top">위에서</button>
+    <button type="button" data-v="iso" class="on">비스듬히</button>
+    <button type="button" data-v="side">옆에서</button>
+    <button type="button" data-v="bottom">아래에서</button>
+  </div>
+</div>
+<div class="cs-bar">
+  <div class="cs-cfg">핀 하우징 <span class="cs-tag t-fix">고정</span> · 편심축 <span class="cs-tag t-in">입력</span> → 출력 플랜지 <span class="cs-tag t-out">출력</span></div>
+  <label class="cs-ctl">핀 수
+    <select class="cs-np">
+      <option value="8">핀 8 · 로브 7 (7:1)</option>
+      <option value="10">핀 10 · 로브 9 (9:1)</option>
+      <option value="12" selected>핀 12 · 로브 11 (11:1)</option>
+      <option value="16">핀 16 · 로브 15 (15:1)</option>
+    </select>
+  </label>
+  <label class="cs-ctl">입력 속도 <input type="range" class="cs-spd" min="-120" max="120" step="5" value="30"><span class="cs-val cs-spd-v">30 rpm</span></label>
+  <label class="cs-ctl">분해 <input type="range" class="cs-exp" min="0" max="100" step="1" value="0"><span class="cs-val cs-exp-v">0%</span></label>
+  <div class="cs-btns"><button type="button" class="cs-pause">일시정지</button><button type="button" class="cs-reset">처음 위치</button></div>
+</div>
+<script>
+(function(){
+'use strict';
+var root=document.getElementById('cyc-sim-v1');
+if(!root) return;
+var stage=root.querySelector('.cs-stage'), cv=root.querySelector('canvas'), ctx=cv.getContext('2d'), bar=root.querySelector('.cs-bar');
+var selN=root.querySelector('.cs-np'), spd=root.querySelector('.cs-spd'), spdV=root.querySelector('.cs-spd-v');
+var exp=root.querySelector('.cs-exp'), expV=root.querySelector('.cs-exp-v');
+var btnP=root.querySelector('.cs-pause'), btnR=root.querySelector('.cs-reset');
+var viewBtns=root.querySelectorAll('.cs-views button');
+var D=Math.PI/180;
+
+/*GEOM_START*/
+var TAU=Math.PI*2;
+// 핀 수 Np, 디스크 로브 Nd=Np-1, 핀원 반지름 R, 편심량 e, 핀 반지름 rr
+function makeGeom(Np){
+  var R=10, Nd=Np-1, e=0.65*R/Np;
+  var rr=0.2*2*R*Math.sin(Math.PI/Np);
+  var g={Np:Np,Nd:Nd,R:R,e:e,rr:rr,Ro:5.0,ro:1.0,No:6,rs:1.0,rc:2.1,rb:2.45};
+  g.rh=g.ro+e;                 // 디스크 출력 구멍 반지름 = 출력핀 반지름 + 편심량
+  var M=Nd*72, pts=[];
+  for(var i=0;i<M;i++) pts.push(profilePt(g,i/M*TAU));
+  g.prof=pts;
+  return g;
+}
+// 디스크 좌표계에서 링핀 중심이 그리는 궤적(트로코이드)
+function trochoid(g,t){
+  return [g.R*Math.cos(t)-g.e*Math.cos(g.Np*t), g.R*Math.sin(t)-g.e*Math.sin(g.Np*t)];
+}
+// 디스크 치형 = 트로코이드를 안쪽으로 핀 반지름만큼 오프셋한 곡선
+function profilePt(g,t){
+  var N=g.Np, R=g.R, e=g.e, q=trochoid(g,t);
+  var dx=-R*Math.sin(t)+e*N*Math.sin(N*t), dy=R*Math.cos(t)-e*N*Math.cos(N*t), L=Math.hypot(dx,dy);
+  return [q[0]-g.rr*dy/L, q[1]+g.rr*dx/L];
+}
+// 독립 자유도는 입력각 th 하나. 디스크 중심 = 편심 위치, 디스크 자전 = -th/Nd
+function discPose(g,th){
+  return {cx:g.e*Math.cos(th), cy:g.e*Math.sin(th), phi:-th/g.Nd};
+}
+/*GEOM_END*/
+
+var COL={
+  inp:{fill:'#f4a24b',edge:'#a35b17',side:'#d9822f',hi:'#ffd8ac'},
+  mid:{fill:'#5f9fe2',edge:'#285c99',side:'#3f7fc4',hi:'#c3dcf8'},
+  out:{fill:'#5cbf7a',edge:'#2b7a45',side:'#41a05e',hi:'#c4ebcf'},
+  fix:{fill:'#bcc1c8',edge:'#666d77',side:'#9aa0a8',hi:'#e6e8ec'},
+  stl:{fill:'#a3adb8',edge:'#4f5a66',side:'#7b8794',hi:'#eef2f6'}
+};
+var FONT='-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif';
+
+// 높이(z) 배치: 입력축(아래) → 캠·디스크·핀하우징 → 출력 플랜지·출력축(위)
+var Z={h0:0,h1:2.8,d0:0.4,d1:2.4,f0:3.6,f1:4.8,os1:8.8,is0:-4.4};
+var RF=7.0, OSR=1.8, EAR=1.9, G=5.2;
+var g, RH, RMAX, discPath, housPath, camPath, brgPath, flgPath;
+
+function circ(p,x,y,r){p.moveTo(x+r,y);p.arc(x,y,r,0,TAU);}
+function build(){
+  g=makeGeom(+selN.value);
+  RH=g.R+g.rr+1.6; RMAX=RH+EAR;
+  var i,j,a,p;
+  p=new Path2D();
+  for(i=0;i<g.prof.length;i++){ if(i===0) p.moveTo(g.prof[i][0],g.prof[i][1]); else p.lineTo(g.prof[i][0],g.prof[i][1]); }
+  p.closePath();
+  circ(p,0,0,g.rb);
+  for(j=0;j<g.No;j++){ a=(j+0.5)*TAU/g.No; circ(p,g.Ro*Math.cos(a),g.Ro*Math.sin(a),g.rh); }
+  discPath=p;
+  p=new Path2D();
+  var M=720, w=0.21;
+  for(i=0;i<M;i++){
+    a=i/M*TAU; var r=RH;
+    for(j=0;j<4;j++){
+      var dd=a-(45+90*j)*D; dd=Math.atan2(Math.sin(dd),Math.cos(dd));
+      if(Math.abs(dd)<w) r=Math.max(r,RH+EAR*Math.sqrt(1-(dd/w)*(dd/w)));
+    }
+    if(i===0) p.moveTo(r*Math.cos(a),r*Math.sin(a)); else p.lineTo(r*Math.cos(a),r*Math.sin(a));
+  }
+  p.closePath();
+  circ(p,0,0,g.R);
+  for(j=0;j<4;j++){ a=(45+90*j)*D; circ(p,(RH+0.8)*Math.cos(a),(RH+0.8)*Math.sin(a),0.55); }
+  housPath=p;
+  p=new Path2D(); circ(p,g.e,0,g.rc); camPath=p;
+  p=new Path2D(); circ(p,0,0,g.rb-0.03); circ(p,0,0,g.rc+0.03); brgPath=p;
+  p=new Path2D(); circ(p,0,0,RF); flgPath=p;
+}
+
+// ---------- 상태 ----------
+var W=600,H=480,dpr=1,S=10,CX=0,CY=0,ce=1,se=0,cps=1,sps=0;
+var VIEWS={top:[-25,90],iso:[-25,38],side:[-25,6],bottom:[-25,-40]};
+var yaw=-25*D, el=38*D, tgt=null, ev=0, evT=0, th=0, rpm=30, paused=false, last=0, drag=null, vis=0, onScreen=true;
+
+function clamp(x,a,b){return x<a?a:(x>b?b:x);}
+function setZ(z){ctx.setTransform(dpr*S*cps,-dpr*S*se*sps,-dpr*S*sps,-dpr*S*se*cps,dpr*CX,dpr*(CY-S*z*ce));}
+function Pj(x,y,z){return [CX+S*(x*cps-y*sps), CY-S*(z*ce+se*(x*sps+y*cps))];}
+function scr(){ctx.setTransform(dpr,0,0,dpr,0,0);}
+
+function resize(){
+  W=Math.max(260,stage.clientWidth);
+  var bh=bar.offsetHeight||60;
+  H=Math.round(Math.max(360,Math.min(W*0.82,window.innerHeight-bh-30)));
+  dpr=Math.min(2.5,window.devicePixelRatio||1);
+  cv.style.height=H+'px';
+  cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+}
+
+// ---------- 층 단위 전역 깊이 정렬 ----------
+var items=[];
+function addPlate(o){
+  var t=o.z1-o.z0, sg=se>=0?1:-1, zf=sg>0?o.z1:o.z0;
+  var n=Math.max(1,Math.min(48,Math.ceil(t*S*Math.abs(ce)/1.1)));
+  var d=-(o.cx*sps+o.cy*cps)*ce;
+  for(var i=0;i<n;i++){
+    var z=sg>0?o.z0+t*i/n:o.z1-t*i/n;
+    items.push({k:0,s:z*sg,ty:1,pr:o.pr,d:d,o:o,z:z,far:i===0});
+  }
+  items.push({k:1,s:zf*sg,ty:2,pr:o.pr,d:d,o:o,z:zf});
+}
+function addCyl(c){
+  var len=c.z1-c.z0, sg=se>=0?1:-1;
+  var m=Math.max(1,Math.min(48,Math.ceil(len*S*Math.abs(ce)/1.1)));  // 판 층과 같은 규칙 → 링핀 조각 경계가 하우징 층과 일치
+  var d=-(c.x*sps+c.y*cps)*ce;
+  for(var i=0;i<m;i++){
+    var a=c.z0+len*i/m, b=c.z0+len*(i+1)/m;
+    items.push({k:2,s:(sg>0?b:a)*sg,ty:0,pr:0,d:d,c:c,near:sg>0?b:a,far:sg>0?a:b,
+      cap:sg>0?(i===m-1&&c.capHi):(i===0&&c.capLo), farEx:sg>0?i===0:i===m-1});
+  }
+}
+function cmp(a,b){
+  if(Math.abs(a.s-b.s)>1e-6) return a.s-b.s;
+  if(a.ty!==b.ty) return a.ty-b.ty;
+  if(a.pr!==b.pr) return a.pr-b.pr;
+  return a.d-b.d;
+}
+function drawSide(it){
+  var o=it.o; setZ(it.z); ctx.translate(o.cx,o.cy); ctx.rotate(o.rot);
+  ctx.fillStyle=o.col.side; ctx.fill(o.path,'evenodd');
+  if(it.far){ctx.lineWidth=1/S; ctx.strokeStyle=o.col.edge; ctx.stroke(o.path);}
+}
+function drawFace(it){
+  var o=it.o; setZ(it.z); ctx.translate(o.cx,o.cy); ctx.rotate(o.rot);
+  ctx.fillStyle=o.col.fill; ctx.fill(o.path,'evenodd');
+  ctx.lineWidth=1.1/S; ctx.strokeStyle=o.col.edge; ctx.stroke(o.path);
+  if(o.face) o.face();
+}
+function marker(x0,x1){
+  ctx.beginPath(); ctx.moveTo(x0,0); ctx.lineTo(x1,0);
+  ctx.lineCap='round'; ctx.lineWidth=2.6/S; ctx.strokeStyle='#ffffff'; ctx.stroke();
+}
+function drawPiece(it){
+  var c=it.c; scr();
+  var pn=Pj(c.x,c.y,it.near), pf=Pj(c.x,c.y,it.far), rx=S*c.r, ry=Math.max(0.3,S*c.r*Math.abs(se));
+  if(!c.grad){
+    var gr=ctx.createLinearGradient(pn[0]-rx,0,pn[0]+rx,0);
+    gr.addColorStop(0,c.col.side); gr.addColorStop(0.3,c.col.hi); gr.addColorStop(0.6,c.col.fill); gr.addColorStop(1,c.col.edge);
+    c.grad=gr;
+  }
+  ctx.fillStyle=c.grad;
+  ctx.beginPath(); ctx.ellipse(pf[0],pf[1],rx,ry,0,0,TAU); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=c.col.edge;
+  if(it.farEx) ctx.stroke();
+  var y0=Math.min(pn[1],pf[1]), y1=Math.max(pn[1],pf[1]);
+  ctx.fillRect(pn[0]-rx,y0,2*rx,y1-y0+0.4);
+  ctx.beginPath(); ctx.moveTo(pn[0]-rx,y0); ctx.lineTo(pn[0]-rx,y1); ctx.moveTo(pn[0]+rx,y0); ctx.lineTo(pn[0]+rx,y1); ctx.stroke();
+  if(it.cap){
+    ctx.beginPath(); ctx.ellipse(pn[0],pn[1],rx,ry,0,0,TAU);
+    ctx.fillStyle=c.col.fill; ctx.fill(); ctx.stroke();
+    if(c.mark!=null){ setZ(it.near); ctx.translate(c.x,c.y); ctx.rotate(c.mark); marker(0,c.r*0.8); }
+  }
+}
+
+// ---------- 라벨·범례 ----------
+function anchor(cx,cy,r,z){var p=Pj(cx,cy,z); return [p[0]+S*r,p[1]];}
+function lblText(){
+  return [['출력 플랜지 (Output)','출력핀 '+g.No+'개로 디스크 자전만 꺼냄'],['사이클로이드 디스크','로브 '+g.Nd+'개 · 공전하며 천천히 역회전'],
+          ['핀 하우징 (Ring pin)','고정 · 핀 '+g.Np+'개 (로브보다 1개 많음)'],['편심축 (Input)','캠+베어링이 디스크를 공전시킴']];
+}
+function labelRoom(){
+  var small=W<560, t=lblText(), w=0, i; scr();
+  for(i=0;i<t.length;i++){
+    ctx.font='600 '+(small?11:13)+'px '+FONT; w=Math.max(w,ctx.measureText(t[i][0]).width);
+    if(!small){ctx.font='11.5px '+FONT; w=Math.max(w,ctx.measureText(t[i][1]).width);}
+  }
+  return Math.min(W*0.45,w+32);
+}
+function drawLabels(L){
+  if(vis<0.02) return;
+  scr(); ctx.globalAlpha=vis;
+  var small=W<560, f1=small?11:13, f2=11.5, gap=small?20:34;
+  var lx=CX+S*RMAX+14, i;
+  L.sort(function(a,b){return a.ay-b.ay;});
+  for(i=0;i<L.length;i++){ L[i].ly=L[i].ay; if(i>0&&L[i].ly<L[i-1].ly+gap) L[i].ly=L[i-1].ly+gap; }
+  var over=L[L.length-1].ly-(H-24); if(over>0) for(i=0;i<L.length;i++) L[i].ly-=over;
+  for(i=0;i<L.length;i++){
+    var l=L[i];
+    ctx.setLineDash([3,3]); ctx.lineWidth=1; ctx.strokeStyle='#8a94a1';
+    ctx.beginPath(); ctx.moveTo(l.ax+3,l.ay); ctx.lineTo(lx-12,l.ly); ctx.lineTo(lx-4,l.ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#4b5563'; ctx.beginPath(); ctx.arc(l.ax+2,l.ay,2.2,0,TAU); ctx.fill();
+    ctx.fillStyle=l.col.edge; ctx.fillRect(lx,l.ly-f1+1,4,small?f1+2:f1+f2+4);
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+    ctx.fillStyle='#1f2933'; ctx.font='600 '+f1+'px '+FONT; ctx.fillText(l.name,lx+9,l.ly);
+    if(!small){ctx.fillStyle='#5b6573'; ctx.font=f2+'px '+FONT; ctx.fillText(l.desc,lx+9,l.ly+f2+3);}
+  }
+  ctx.globalAlpha=1;
+}
+function drawLegend(){
+  var a=clamp(1-ev*1.6,0,1); if(a<0.02) return;
+  scr(); ctx.globalAlpha=a;
+  var rows=[[COL.inp,'편심축 · 캠 (입력)'],[COL.mid,'사이클로이드 디스크'],[COL.out,'출력 플랜지 (출력)'],[COL.fix,'핀 하우징 (고정)'],[COL.stl,'핀 · 베어링']];
+  var fs=W<520?11:12, lh=fs+7, x=10, y=10, bw=W<520?132:148;
+  ctx.fillStyle='rgba(255,255,255,0.88)'; ctx.strokeStyle='#e1e5ea'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.rect(x,y,bw,rows.length*lh+10); ctx.fill(); ctx.stroke();
+  ctx.font=fs+'px '+FONT; ctx.textBaseline='middle'; ctx.textAlign='left';
+  for(var i=0;i<rows.length;i++){
+    var yy=y+5+lh*i+lh/2;
+    ctx.fillStyle=rows[i][0].fill; ctx.strokeStyle=rows[i][0].edge;
+    ctx.fillRect(x+8,yy-5,14,10); ctx.strokeRect(x+8.5,yy-4.5,13,9);
+    ctx.fillStyle='#1f2933'; ctx.fillText(rows[i][1],x+28,yy);
+  }
+  ctx.globalAlpha=1;
+}
+function drawHint(){
+  scr(); ctx.font=(W<520?11:12)+'px '+FONT; ctx.fillStyle='#8a94a1'; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillText('드래그: 시점 회전 · 더블클릭: 기본 시점',10,H-10);
+}
+function axisLabel(txt,x,y,r,below){
+  var a=clamp((Math.abs(ce)-0.2)/0.3,0,1); if(a<0.02) return;
+  scr(); ctx.globalAlpha=a; ctx.font='600 12px '+FONT; ctx.fillStyle='#475569'; ctx.textAlign='right';
+  ctx.textBaseline=below?'top':'bottom';
+  ctx.fillText(txt,x-S*r-6,y); ctx.globalAlpha=1;
+}
+
+// ---------- 프레임 ----------
+function wrapA(a){return Math.atan2(Math.sin(a),Math.cos(a));}
+function frame(ts){
+  requestAnimationFrame(frame);
+  var dt=last?Math.min(0.05,(ts-last)/1000):0; last=ts;
+  if(!onScreen) return;
+  if(!paused) th+=rpm*TAU/60*dt;
+  if(tgt){
+    var k=Math.min(1,dt*6);
+    yaw+=wrapA(tgt[0]-yaw)*k; el+=(tgt[1]-el)*k;
+    if(Math.abs(wrapA(tgt[0]-yaw))<1e-3&&Math.abs(tgt[1]-el)<1e-3){yaw=tgt[0];el=tgt[1];tgt=null;}
+  }
+  ev+=(evT-ev)*Math.min(1,dt*8); if(Math.abs(evT-ev)<1e-4) ev=evT;
+  var elr=el; if(Math.abs(elr)<5*D) elr=(elr<0?-5:5)*D;
+  ce=Math.cos(elr); se=Math.sin(elr); cps=Math.cos(yaw); sps=Math.sin(yaw);
+
+  var oIn=-1.4*G*ev, oD=G*ev, oO=2*G*ev;
+  var zLo=Z.is0+oIn, zHi=Z.os1+oO, zspan=zHi-zLo, zmid=(zLo+zHi)/2;
+  vis=ev*clamp((Math.abs(ce)-0.25)/0.3,0,1);
+  var room=labelRoom()*vis;
+  S=Math.min((W*0.94-room)/(2*RMAX), H*0.93/Math.sqrt(4*RMAX*RMAX+zspan*zspan));
+  CX=(W-room)/2; CY=H/2+S*zmid*ce;
+
+  scr(); ctx.clearRect(0,0,W,H); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+
+  var P=discPose(g,th), phi=P.phi, i, a;
+  items.length=0;
+  // 핀 하우징(고정) + 링핀
+  addPlate({path:housPath,cx:0,cy:0,rot:0,z0:Z.h0,z1:Z.h1,col:COL.fix,pr:0});
+  for(i=0;i<g.Np;i++){ a=i*TAU/g.Np;
+    addCyl({x:g.R*Math.cos(a),y:g.R*Math.sin(a),r:g.rr,z0:Z.h0,z1:Z.h1,col:COL.stl,capLo:true,capHi:true}); }
+  // 사이클로이드 디스크
+  addPlate({path:discPath,cx:P.cx,cy:P.cy,rot:phi,z0:Z.d0+oD,z1:Z.d1+oD,col:COL.mid,pr:1,
+    face:function(){marker(g.rb+0.35,g.R-g.e-g.rr-0.5);}});
+  // 편심 베어링 + 캠 + 입력축 (입력)
+  addPlate({path:brgPath,cx:P.cx,cy:P.cy,rot:0,z0:Z.d0+oIn,z1:Z.d1+oIn,col:COL.stl,pr:2});
+  addPlate({path:camPath,cx:0,cy:0,rot:th,z0:Z.d0+oIn,z1:Z.d1+oIn,col:COL.inp,pr:3,
+    face:function(){marker(0,g.e+g.rc-0.35); ctx.fillStyle='#5b3410'; ctx.beginPath(); ctx.arc(0,0,0.2,0,TAU); ctx.fill();}});
+  addCyl({x:0,y:0,r:g.rs,z0:Z.is0+oIn,z1:Z.d0+oIn,col:COL.inp,capLo:true,capHi:false,mark:th});
+  // 출력 플랜지 + 출력핀 + 출력축 (출력)
+  addPlate({path:flgPath,cx:0,cy:0,rot:phi,z0:Z.f0+oO,z1:Z.f1+oO,col:COL.out,pr:0,
+    face:function(){
+      for(var j=0;j<g.No;j++){var b=(j+0.5)*TAU/g.No;
+        ctx.beginPath(); ctx.arc(g.Ro*Math.cos(b),g.Ro*Math.sin(b),g.ro*0.7,0,TAU);
+        ctx.fillStyle=COL.out.side; ctx.fill(); ctx.lineWidth=1/S; ctx.strokeStyle=COL.out.edge; ctx.stroke();}
+      marker(OSR+0.3,RF-0.45);
+    }});
+  for(i=0;i<g.No;i++){ a=(i+0.5)*TAU/g.No+phi;
+    addCyl({x:g.Ro*Math.cos(a),y:g.Ro*Math.sin(a),r:g.ro,z0:Z.d0+oO,z1:Z.f0+oO,col:COL.stl,capLo:true,capHi:false}); }
+  addCyl({x:0,y:0,r:OSR,z0:Z.f1+oO,z1:Z.os1+oO,col:COL.out,capLo:false,capHi:true,mark:phi});
+
+  items.sort(cmp);
+  for(i=0;i<items.length;i++){ var it=items[i]; if(it.k===0) drawSide(it); else if(it.k===1) drawFace(it); else drawPiece(it); }
+
+  // 분해 시: 원래 끼워지는 위치를 점선으로
+  if(ev>0.02){
+    scr(); ctx.globalAlpha=Math.min(1,ev*2)*0.85; ctx.setLineDash([4,4]); ctx.lineWidth=1.2; ctx.strokeStyle='#64748b';
+    ctx.beginPath();
+    for(i=0;i<g.No;i++){ a=(i+0.5)*TAU/g.No+phi; var x=g.Ro*Math.cos(a), y=g.Ro*Math.sin(a);
+      var p1=Pj(x,y,Z.d0+oO), p2=Pj(x,y,Z.d1+oD); ctx.moveTo(p1[0],p1[1]); ctx.lineTo(p2[0],p2[1]); }
+    var c1=Pj(P.cx,P.cy,Z.d1+oIn), c2=Pj(P.cx,P.cy,Z.d0+oD); ctx.moveTo(c1[0],c1[1]); ctx.lineTo(c2[0],c2[1]);
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+  }
+  var pb=Pj(0,0,Z.is0+oIn), pt=Pj(0,0,Z.os1+oO);
+  axisLabel('입력축',pb[0],pb[1],g.rs,se>=0);
+  axisLabel('출력축',pt[0],pt[1],OSR,se<0);
+
+  var zm=function(a,b){return (a+b)/2;};
+  var lf=anchor(0,0,RF,zm(Z.f0,Z.f1)+oO), ld=anchor(P.cx,P.cy,g.R+g.e-g.rr,zm(Z.d0,Z.d1)+oD),
+      lh=anchor(0,0,RH,zm(Z.h0,Z.h1)), li=anchor(P.cx,P.cy,g.rb,zm(Z.d0,Z.d1)+oIn);
+  var T=lblText();
+  drawLabels([
+    {ax:lf[0],ay:lf[1],col:COL.out,name:T[0][0],desc:T[0][1]},
+    {ax:ld[0],ay:ld[1],col:COL.mid,name:T[1][0],desc:T[1][1]},
+    {ax:lh[0],ay:lh[1],col:COL.fix,name:T[2][0],desc:T[2][1]},
+    {ax:li[0],ay:li[1],col:COL.inp,name:T[3][0],desc:T[3][1]}
+  ]);
+  drawLegend();
+  drawHint();
+}
+
+// ---------- 입력 ----------
+function setView(v){
+  tgt=[VIEWS[v][0]*D,VIEWS[v][1]*D];
+  for(var i=0;i<viewBtns.length;i++) viewBtns[i].classList.toggle('on',viewBtns[i].getAttribute('data-v')===v);
+}
+for(var vi=0;vi<viewBtns.length;vi++) viewBtns[vi].addEventListener('click',function(){setView(this.getAttribute('data-v'));});
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY,id:e.pointerId}; tgt=null; cv.classList.add('cs-drag'); try{cv.setPointerCapture(e.pointerId);}catch(_){}
+  for(var i=0;i<viewBtns.length;i++) viewBtns[i].classList.remove('on');});
+cv.addEventListener('pointermove',function(e){
+  if(!drag||e.pointerId!==drag.id) return;
+  var dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
+  yaw-=dx*0.009; el+=dy*0.009;
+  el=clamp(el,-89*D,90*D);
+  if(Math.abs(el)<5*D) el=(dy<0?-5:5)*D;
+});
+function endDrag(e){ if(drag&&e.pointerId===drag.id){drag=null; cv.classList.remove('cs-drag');} }
+cv.addEventListener('pointerup',endDrag); cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('dblclick',function(){setView('iso');});
+selN.addEventListener('change',build);
+spd.addEventListener('input',function(){rpm=+spd.value; spdV.textContent=rpm+' rpm';});
+exp.addEventListener('input',function(){evT=exp.value/100; expV.textContent=exp.value+'%';});
+btnP.addEventListener('click',function(){paused=!paused; btnP.textContent=paused?'재생':'일시정지';});
+btnR.addEventListener('click',function(){th=0;});
+window.addEventListener('resize',resize);
+if(window.ResizeObserver) new ResizeObserver(resize).observe(stage);
+if(window.IntersectionObserver) new IntersectionObserver(function(en){onScreen=en[0].isIntersecting;}).observe(cv);
+
+build(); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</div>
+<!-- ===== 티스토리 복사 끝 ===== -->
+</body>
+</html>

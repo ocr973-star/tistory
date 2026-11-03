@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>하모닉 감속기 시뮬레이터</title>
+</head>
+<body style="margin:0;padding:12px;background:#eef0f3;">
+
+<!-- ===================== 티스토리 복사 시작 ===================== -->
+<div id="hdsim">
+<style>
+#hdsim{
+  --ink:#1f2328;--muted:#656d76;--line:#d8dde3;--soft:#f6f8fa;
+  font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:12px;
+  width:100%;box-sizing:border-box;overflow:hidden;line-height:1.5;font-size:14px;text-align:left;
+}
+#hdsim *{box-sizing:border-box}
+#hdsim .hd-stage{background:var(--soft);position:relative}
+#hdsim .hd-canvas{display:block;width:100%;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+#hdsim .hd-canvas.drag{cursor:grabbing}
+#hdsim .hd-view{position:absolute;top:8px;right:8px;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+#hdsim .hd-view button{padding:3px 9px;font-size:12px;background:rgba(255,255,255,.92)}
+#hdsim .hd-view button.on{background:#ddf4ff;border-color:#9cc9f2;color:#0969da}
+#hdsim .hd-ctrl{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+#hdsim .hd-grp{display:flex;align-items:center;gap:8px;font-size:13px}
+#hdsim .hd-grp > span{color:var(--muted)}
+#hdsim .hd-grp b{font-variant-numeric:tabular-nums;min-width:58px;display:inline-block}
+#hdsim .hd-fix{font-size:12.5px;color:var(--muted)}
+#hdsim .hd-fix em{font-style:normal;font-weight:600;padding:1px 7px;border-radius:10px;margin:0 2px}
+#hdsim .t-fixed{background:#eaeef2;color:#57606a}
+#hdsim .t-input{background:#ddf4ff;color:#0969da}
+#hdsim .t-output{background:#dafbe1;color:#1a7f37}
+#hdsim select{font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+#hdsim input[type=range]{width:140px;margin:0;accent-color:#3c6fbb}
+#hdsim button{font:inherit;font-size:13px;padding:4px 11px;border:1px solid var(--line);border-radius:6px;background:var(--soft);color:var(--ink);cursor:pointer}
+#hdsim button:hover{background:#eaeef2}
+#hdsim .hd-btns{display:flex;gap:6px;margin-left:auto}
+@media (max-width:560px){#hdsim input[type=range]{width:110px}#hdsim .hd-btns{margin-left:0}}
+</style>
+
+<div class="hd-stage">
+  <canvas class="hd-canvas" aria-label="하모닉 감속기 3D 애니메이션 (드래그로 시점 회전)"></canvas>
+  <div class="hd-view">
+    <button type="button" data-v="top">위에서</button>
+    <button type="button" data-v="iso">비스듬히</button>
+    <button type="button" data-v="side">옆에서</button>
+    <button type="button" data-v="bottom" class="on">아래에서</button>
+  </div>
+</div>
+
+<div class="hd-ctrl">
+  <div class="hd-fix">서큘러 스플라인 <em class="t-fixed">고정</em> · 웨이브 제너레이터 <em class="t-input">입력</em> → 플렉스 스플라인 <em class="t-output">출력</em></div>
+  <label class="hd-grp"><span>잇수 Zf/Zc</span>
+    <select data-k="preset">
+      <option value="0">30 / 32</option>
+      <option value="1" selected>50 / 52</option>
+      <option value="2">80 / 82</option>
+      <option value="3">100 / 102</option>
+    </select></label>
+  <label class="hd-grp"><span>입력 속도</span>
+    <input type="range" data-k="rpm" min="-120" max="120" step="5" value="30"><b data-o="rpm"></b></label>
+  <label class="hd-grp"><span>분해 정도</span>
+    <input type="range" data-k="explode" min="0" max="100" step="1" value="0"><b data-o="exp">0%</b></label>
+  <div class="hd-btns">
+    <button type="button" data-b="play">❚❚ 일시정지</button>
+    <button type="button" data-b="reset">↺ 처음 위치</button>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var root=document.getElementById('hdsim');
+if(!root)return;
+var $=function(s){return root.querySelector(s);};
+var cv=$('.hd-canvas'), ctx=cv.getContext('2d');
+var TAU=Math.PI*2, DEG=Math.PI/180;
+
+var C={
+  wg: {fill:'#f2a65a',edge:'#b4601b',side:'#c8722a',hi:'#f8c99a'},
+  fs: {fill:'#5cc27f',edge:'#1d7a3a',side:'#2f9a52',hi:'#a6e2b9'},
+  cs: {fill:'#c6ccd3',edge:'#6e7781',side:'#8f979f',hi:'#e3e7eb'},
+  brg:{fill:'#d9dde2',edge:'#57606a',side:'#8c949d',hi:'#f4f6f8'},
+  mark:{fill:'#ffd33d',edge:'#9a6700'}
+};
+var PRESETS=[[30,32],[50,52],[80,82],[100,102]];      // Zc − Zf = 2 (타원의 두 장축에서 맞물림)
+var VIEWS={top:{yaw:0,el:90},iso:{yaw:-25,el:38},side:{yaw:0,el:6},bottom:{yaw:-25,el:-35}};
+var DEFAULT_VIEW='bottom';   // 웨이브 제너레이터가 컵의 열린 쪽(아래)에 있어 기본은 아래에서 본다
+
+var st={zf:50,zc:52,rpm:30,explode:0,ev:0,playing:true,thw:0};
+var V={yaw:VIEWS[DEFAULT_VIEW].yaw*DEG,raw:VIEWS[DEFAULT_VIEW].el*DEG,el:VIEWS[DEFAULT_VIEW].el*DEG}, VT=null;
+
+/* ---------------- 운동학 ----------------
+   서큘러 스플라인(CS) 고정, 웨이브 제너레이터(WG) 입력 θw, 플렉스 스플라인(FS) 출력 θf.
+   장축 방향에서 FS 이 위상 − CS 이 위상 = 반 피치 를 항상 유지:
+     Zf(θw − θf) − Zc·θw = π   →   θf = θw(1 − Zc/Zf) − π/Zf
+   → ωf/ωw = (Zf − Zc)/Zf  (반대 방향, 감속비 Zf/(Zc−Zf)) */
+function thetaF(){return st.thw*(1-st.zc/st.zf)-Math.PI/st.zf;}
+
+/* ---------------- 3D 직교 투영 ---------------- */
+var W=300,H=300,dpr=1,S=1,CX=0,CY=0,cps=1,sps=0,ce=0,se=1;
+function setZ(z){ctx.setTransform(dpr*S*cps,-dpr*S*se*sps,-dpr*S*sps,-dpr*S*se*cps,dpr*CX,dpr*(CY-S*z*ce));}
+function P(x,y,z){return [CX+S*(x*cps-y*sps),CY-S*(z*ce+se*(x*sps+y*cps))];}
+function screenId(){ctx.setTransform(dpr,0,0,dpr,0,0);}
+
+/* ---------------- 치수 (모듈 1) ---------------- */
+var HA=0.8, HF=1.0, HP=0.70, TAN=0.364;     // 하모닉용 낮은 이 (이끝 0.8, 이뿌리 1.0)
+var T=6, TD=1.6, LUG=4.5;
+function dims(){
+  var zf=st.zf,zc=st.zc,Rf=zf/2,Rc=zc/2;
+  var d={zf:zf,zc:zc,Rf:Rf,Rc:Rc,w0:(zc-zf)/2,
+    Rb:Rf-HF-1.2,            // FS 림 안쪽(베어링 접촉면)
+    Rwo:Rf-HF-0.4,           // FS 컵 벽 바깥
+    Ro:Rc+HF+3.2,            // CS 바깥
+    L:0.45*Rf+3};            // FS 컵 길이
+  d.Rcam=d.Rb-2.4; d.Rball=d.Rb-1.2; d.rin=Math.max(1.5,d.Rcam*0.17); d.rout=Math.max(1.8,d.Rwo*0.16);
+  return d;
+}
+
+/* ---------------- 경로 ---------------- */
+function poly(a){ctx.moveTo(a[0],a[1]);for(var i=2;i<a.length;i+=2)ctx.lineTo(a[i],a[i+1]);ctx.closePath();}
+function polarPush(a,r,t){a.push(r*Math.cos(t),r*Math.sin(t));}
+
+// FS 림 형상: 재료 각도 α의 이가 반경 w = kd·w0·cos2(α−θw), 접선 v = −kd·(w0/2)·sin2(α−θw) 만큼 이동 (비신장 링)
+function fsRimGeom(d,thw,thf,kd){
+  var teeth=[],bore=[],mark=[],k,i,M=Math.max(120,d.zf*2);
+  for(k=0;k<d.zf;k++){
+    var al=thf+TAU*k/d.zf,q=2*(al-thw),w=kd*d.w0*Math.cos(q),v=-kd*d.w0/2*Math.sin(q);
+    var be=al+v/d.Rf,rho=d.Rf+w,r1=rho-HF,r2=rho+HA,a1=(HP+HF*TAN)/r1,a2=(HP-HA*TAN)/r2;
+    polarPush(teeth,r1,be-a1);polarPush(teeth,r2,be-a2);polarPush(teeth,r2,be+a2);polarPush(teeth,r1,be+a1);
+    if(k===0){polarPush(mark,r1,be-a1);polarPush(mark,r2,be-a2);polarPush(mark,r2,be+a2);polarPush(mark,r1,be+a1);}
+  }
+  for(i=0;i<M;i++){
+    var a=thf+TAU*i/M,qq=2*(a-thw);
+    polarPush(bore,d.Rb+kd*d.w0*Math.cos(qq),a-kd*d.w0/2*Math.sin(qq)/d.Rf);
+  }
+  return {teeth:teeth,bore:bore,mark:mark};
+}
+function tubeCurve(r,d,thw,thf,k){
+  var a=[],i,M=96;
+  for(i=0;i<M;i++){
+    var al=thf+TAU*i/M,q=2*(al-thw);
+    polarPush(a,r+k*d.w0*Math.cos(q),al-k*d.w0/2*Math.sin(q)/d.Rf);
+  }
+  return a;
+}
+function camCurve(r,d,thw){   // WG: 강체 타원 캠 r(φ) = R + w0·cos2(φ−θw)
+  var a=[],i,M=120;
+  for(i=0;i<M;i++){var f=TAU*i/M;polarPush(a,r+d.w0*Math.cos(2*(f-thw)),f);}
+  return a;
+}
+function csGeom(d){
+  var out=[],holes=[],teeth=[],i,j,M=360,w=0.2;
+  for(i=0;i<M;i++){
+    var a=TAU*i/M,dd=((a-Math.PI/4)%(Math.PI/2)+Math.PI/2)%(Math.PI/2); if(dd>Math.PI/4)dd-=Math.PI/2;
+    var u=Math.abs(dd)/w; polarPush(out,d.Ro+(u<1?LUG*Math.sqrt(1-u*u):0),a);
+  }
+  for(i=0;i<4;i++){
+    var b=Math.PI/4+i*Math.PI/2,h=[];
+    for(j=0;j<24;j++)h.push((d.Ro+LUG*0.45)*Math.cos(b)+LUG*0.26*Math.cos(TAU*j/24),(d.Ro+LUG*0.45)*Math.sin(b)+LUG*0.26*Math.sin(TAU*j/24));
+    holes.push(h);
+  }
+  for(j=0;j<d.zc;j++){   // 내치: 이 중심 = 2πj/Zc
+    var c=TAU*j/d.zc,r1=d.Rc+HF,r2=d.Rc-HA,a1=(HP+HF*TAN)/r1,a2=(HP-HA*TAN)/r2;
+    polarPush(teeth,r1,c-a1);polarPush(teeth,r2,c-a2);polarPush(teeth,r2,c+a2);polarPush(teeth,r1,c+a1);
+  }
+  return {out:out,holes:holes,teeth:teeth};
+}
+var csCache=null,csKey='';
+
+function marker(x,y,th,r0,r1){
+  ctx.beginPath();
+  ctx.moveTo(x+r0*Math.cos(th),y+r0*Math.sin(th));
+  ctx.lineTo(x+r1*Math.cos(th),y+r1*Math.sin(th));
+  ctx.strokeStyle='#ffffff';ctx.lineWidth=2.8/S;ctx.lineCap='round';ctx.stroke();
+}
+function cylinder(x,y,z1,z2,r,col,th){
+  var far=se>=0?z1:z2,near=se>=0?z2:z1;
+  setZ(far);ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fillStyle=col.side;ctx.fill();
+  var p1=P(x,y,z1),p2=P(x,y,z2),x0=p1[0]-S*r,x1=p1[0]+S*r,ya=Math.min(p1[1],p2[1]),yb=Math.max(p1[1],p2[1]);
+  screenId();
+  if(yb-ya>0.3){
+    var gr=ctx.createLinearGradient(x0,0,x1,0);
+    gr.addColorStop(0,col.side);gr.addColorStop(0.35,col.hi);gr.addColorStop(1,col.side);
+    ctx.fillStyle=gr;ctx.fillRect(x0,ya,x1-x0,yb-ya);
+    ctx.strokeStyle=col.edge;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x0,ya);ctx.lineTo(x0,yb);ctx.moveTo(x1,ya);ctx.lineTo(x1,yb);ctx.stroke();
+  }
+  setZ(near);ctx.beginPath();ctx.arc(x,y,r,0,TAU);
+  ctx.fillStyle=col.fill;ctx.fill();ctx.strokeStyle=col.edge;ctx.lineWidth=1.1/S;ctx.stroke();
+  if(th!==undefined)marker(x,y,th,0,r*0.82);
+}
+function ease(t){return t*t*(3-2*t);}
+
+/* ---------------- 분해 배치 ----------------
+   0~35%: FS가 WG를 품은 채 위로 빠져 CS에서 분리
+   35~100%: WG는 아래로(CS 구멍을 통과), FS는 더 위로. WG가 빠지면 FS는 원형으로 복원 */
+function geo(d){
+  var Rmax=d.Ro+LUG,Dx=0.35*d.Ro+8,Dw=0.55*d.Ro+8,Ls=0.3*d.Ro+5,lift0=T+1.5,u=st.ev,a=0.35,zF,zW;
+  if(u<=a){var q=ease(u/a)*lift0;zF=q;zW=q;}
+  else{var p=ease((u-a)/(1-a));zF=lift0+p*Dx;zW=lift0+(-Dw-lift0)*p;}
+  var ov=Math.max(0,Math.min(zF+T,zW+T)-Math.max(zF,zW));
+  return {Rmax:Rmax,Ls:Ls,zF:zF,zW:zW,kd:ov/T,
+    zmin:-Dw-Ls, zmax:lift0+Dx+T+d.L+TD+Ls};   // 분해 최대 기준으로 고정 → 스케일 안정
+}
+
+function draw(){
+  screenId();ctx.clearRect(0,0,W,H);
+  cps=Math.cos(V.yaw);sps=Math.sin(V.yaw);ce=Math.cos(V.el);se=Math.sin(V.el);
+  var d=dims(),g=geo(d),t=ease(Math.min(1,st.ev*2.5)),thw=st.thw,thf=thetaF();
+  var vis=t*Math.max(0,Math.min(1,(Math.abs(ce)-0.25)/0.3));
+  var labelRoom=vis*Math.min(230,W*0.32);
+  var Zspan=g.zmax-g.zmin,zmid=(g.zmax+g.zmin)/2;
+  S=Math.min((W*0.94-labelRoom)/(2*g.Rmax),H*0.93/Math.sqrt(4*g.Rmax*g.Rmax+Zspan*Zspan));
+  CX=(W-labelRoom)/2;CY=H/2+S*zmid*ce;
+
+  var key=d.zf+'/'+d.zc; if(key!==csKey){csCache=csGeom(d);csKey=key;}
+  var cs=csCache, fr=fsRimGeom(d,thw,thf,g.kd);
+  var camO=camCurve(d.Rcam,d,thw), raceO=camCurve(d.Rb,d,thw);
+  var zTube=g.zF+T, zTop=zTube+d.L;
+
+  var sgn=se>=0?1:-1, items=[];
+  function dep(x,y){return -(x*sps+y*cps)*ce;}
+  // 층 단위 전역 깊이 정렬용 등록
+  function addSolid(z0,TT,pri,pathFn,col,rule,detail){
+    var sidePx=TT*S*Math.abs(ce),n=sidePx<0.6?0:Math.min(48,Math.ceil(sidePx/1.1)),i;
+    var far=sgn>0?z0:z0+TT,near=sgn>0?z0+TT:z0;
+    for(i=0;i<n;i++)(function(z){
+      items.push({s:z*sgn,t:1,pri:pri,d:0,fn:function(){setZ(z);pathFn();ctx.fillStyle=col.side;ctx.fill(rule);}});
+    })(far+(near-far)*i/n);
+    items.push({s:near*sgn,t:2,pri:pri,d:0,fn:function(){
+      setZ(near);pathFn();ctx.fillStyle=col.fill;ctx.fill(rule);
+      ctx.strokeStyle=col.edge;ctx.lineWidth=1.1/S;ctx.lineJoin='round';ctx.stroke();
+      if(detail)detail();
+    }});
+  }
+  function addCyl(x,y,z1,z2,r,col,th){
+    items.push({s:(sgn>0?z2:z1)*sgn,t:0,pri:0,d:dep(x,y),fn:function(){cylinder(x,y,z1,z2,r,col,th);}});
+  }
+  // FS 컵 벽: 림 쪽은 타원, 바닥 쪽으로 갈수록 원형 (코닝). 열린 쪽이 보이면 고리로, 아니면 원판으로 쌓는다
+  function addTube(){
+    var openNear=sgn<0, sidePx=d.L*S*Math.abs(ce);
+    var band=Math.max(0.5,Math.min(1.1,0.8*S*Math.abs(se)));
+    var n=Math.min(240,Math.ceil(sidePx/(openNear?band:1.1)))+1,i;
+    var far=sgn>0?zTube:zTop,near=sgn>0?zTop:zTube;
+    for(i=0;i<n;i++)(function(z){
+      var k=g.kd*(1-(z-zTube)/d.L);
+      items.push({s:z*sgn,t:1,pri:1,d:0,fn:function(){
+        setZ(z);ctx.beginPath();poly(tubeCurve(d.Rwo,d,thw,thf,k));
+        if(openNear)poly(tubeCurve(d.Rb,d,thw,thf,k));
+        var R=d.Rwo+1,gr=ctx.createLinearGradient(-R*cps,R*sps,R*cps,-R*sps);
+        gr.addColorStop(0,C.fs.side);gr.addColorStop(0.35,C.fs.hi);gr.addColorStop(1,C.fs.side);
+        ctx.fillStyle=gr;ctx.fill('evenodd');
+      }});
+    })(n>1?far+(near-far)*i/(n-1):far);
+  }
+
+  // 서큘러 스플라인 (고정)
+  addSolid(0,T,0,function(){ctx.beginPath();poly(cs.out);cs.holes.forEach(poly);poly(cs.teeth);},C.cs,'evenodd');
+  // 플렉스 스플라인 림 (외치)
+  addSolid(g.zF,T,1,function(){ctx.beginPath();poly(fr.teeth);poly(fr.bore);},C.fs,'evenodd',function(){
+    ctx.beginPath();poly(fr.mark);ctx.fillStyle=C.mark.fill;ctx.fill();ctx.strokeStyle=C.mark.edge;ctx.lineWidth=1/S;ctx.stroke();
+  });
+  addTube();
+  // 컵 바닥(다이어프램) + 출력 플랜지
+  addSolid(zTop,TD,1,function(){ctx.beginPath();ctx.arc(0,0,d.Rwo,0,TAU);},C.fs,'nonzero',function(){
+    for(var i=0;i<6;i++){var b=thf+TAU*i/6;ctx.beginPath();ctx.arc(d.Rwo*0.62*Math.cos(b),d.Rwo*0.62*Math.sin(b),Math.max(0.6,d.Rwo*0.05),0,TAU);ctx.fillStyle=C.fs.edge;ctx.fill();}
+    marker(0,0,thf,d.rout+0.4,d.Rwo-0.9);
+  });
+  addCyl(0,0,zTop+TD,zTop+TD+g.Ls,d.rout,C.fs,thf);
+  // 웨이브 제너레이터: 옆면은 베어링 바깥 윤곽 하나로 쌓고(캠 옆면은 안에 숨음), 보이는 면에 베어링·볼·캠을 그림
+  addSolid(g.zW,T,2,function(){ctx.beginPath();poly(raceO);},C.brg,'nonzero',function(){
+    var nb=Math.max(12,Math.floor(TAU*d.Rball/2.3)),cage=thw*0.5,i;
+    for(i=0;i<nb;i++){
+      var f=cage+TAU*i/nb,r=d.Rball+d.w0*Math.cos(2*(f-thw));
+      ctx.beginPath();ctx.arc(r*Math.cos(f),r*Math.sin(f),0.72,0,TAU);
+      ctx.fillStyle=C.brg.hi;ctx.fill();ctx.strokeStyle=C.brg.edge;ctx.lineWidth=0.8/S;ctx.stroke();
+    }
+    ctx.beginPath();poly(camO);ctx.fillStyle=C.wg.fill;ctx.fill();
+    ctx.strokeStyle=C.wg.edge;ctx.lineWidth=1.1/S;ctx.stroke();
+    marker(0,0,thw,d.rin+0.4,d.Rcam+d.w0-1);marker(0,0,thw+Math.PI,d.rin+0.4,d.Rcam+d.w0-1);
+  });
+  addCyl(0,0,g.zW-g.Ls,g.zW,d.rin,C.wg,thw);
+
+  items.sort(function(p,q){
+    var ds=p.s-q.s;
+    if(Math.abs(ds)>1e-6)return ds;
+    if(p.t!==q.t)return p.t-q.t;
+    if(p.pri!==q.pri)return p.pri-q.pri;
+    return p.d-q.d;
+  });
+  items.forEach(function(o){o.fn();});
+
+  /* ---------- 오버레이 ---------- */
+  screenId();
+  var font='"Malgun Gothic","Apple SD Gothic Neo",sans-serif';
+  if(t>0.02){
+    ctx.save();ctx.globalAlpha=0.6*t;ctx.setLineDash([5,4]);ctx.lineWidth=1.2;ctx.strokeStyle='#57606a';
+    var p1=P(0,0,g.zmin-3),p2=P(0,0,g.zmax+3);
+    ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();
+    ctx.restore();
+  }
+  if(vis>0.01){
+    var lx=CX+S*g.Rmax+18;
+    var labels=[
+      {c:C.fs,z:g.zF+(T+d.L)/2,r:d.Rwo,name:'플렉스 스플라인 (Flexspline)',
+        sub:g.kd>0.5?'출력 · 웨이브 제너레이터에 밀려 타원으로 휨':'출력 · 원래는 원형인 얇은 컵 (외치 Zf='+d.zf+')'},
+      {c:C.cs,z:T/2,r:g.Rmax,name:'서큘러 스플라인 (Circular Spline)',sub:'고정 · 내치 Zc = Zf+2 = '+d.zc+', 하우징 체결'},
+      {c:C.wg,z:g.zW+T/2,r:d.Rb+d.w0,name:'웨이브 제너레이터 (Wave Generator)',sub:'입력 · 타원 캠 + 유연 베어링'}
+    ];
+    // 라벨이 겹치지 않게 세로 간격 확보 (분해 초반에는 부품이 가까움)
+    labels.forEach(function(it){it.y0=P(0,0,it.z)[1];it.y=it.y0;});
+    labels.sort(function(p,q){return p.y0-q.y0;});
+    var GAPL=38,i0,sumd=0;
+    for(i0=1;i0<labels.length;i0++)labels[i0].y=Math.max(labels[i0].y,labels[i0-1].y+GAPL);
+    labels.forEach(function(it){sumd+=it.y-it.y0;});
+    labels.forEach(function(it){it.y-=sumd/labels.length;});
+    ctx.save();ctx.globalAlpha=vis;ctx.textBaseline='alphabetic';
+    labels.forEach(function(it){
+      var y=it.y;
+      ctx.setLineDash([2,3]);ctx.strokeStyle='#9aa3ad';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(CX+S*it.r+4,it.y0);ctx.lineTo(lx-14,y);ctx.lineTo(lx-6,y);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle=it.c.edge;ctx.font='700 14px '+font;ctx.fillText(it.name,lx,y-1);
+      ctx.fillStyle='#656d76';ctx.font='12px '+font;ctx.fillText(it.sub,lx,y+15);
+    });
+    ctx.font='700 12.5px '+font;
+    var q=P(0,0,zTop+TD+g.Ls*0.65);ctx.fillStyle=C.fs.edge;ctx.fillText('출력축',q[0]+S*d.rout+8,q[1]+4);
+    q=P(0,0,g.zW-g.Ls*0.65);ctx.fillStyle=C.wg.edge;ctx.fillText('입력축',q[0]+S*d.rin+8,q[1]+4);
+    ctx.restore();
+  }
+  if(t<0.98){
+    ctx.save();ctx.globalAlpha=1-t;ctx.font='13px '+font;ctx.textBaseline='middle';
+    [['웨이브 제너레이터 · 입력',C.wg],['플렉스 스플라인 · 출력',C.fs],['서큘러 스플라인 · 고정',C.cs],['유연 베어링 · 축',C.brg],['노란 이 = 플렉스 스플라인 기준 이',C.mark]].forEach(function(it,i){
+      var y=18+i*20;
+      ctx.fillStyle=it[1].fill;ctx.strokeStyle=it[1].edge;ctx.lineWidth=1;
+      ctx.beginPath();ctx.rect(14,y-6,12,12);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#1f2328';ctx.fillText(it[0],32,y);
+    });
+    ctx.restore();
+  }
+  ctx.font='12px '+font;ctx.fillStyle='#8c959f';ctx.textBaseline='alphabetic';
+  ctx.fillText('드래그: 시점 회전 · 더블클릭: 기본 시점',12,H-10);
+}
+
+/* ---------------- 시점 조작 ---------------- */
+function effEl(raw){var m=5*DEG;return raw>=0?Math.max(raw,m):Math.min(raw,-m);}
+function markView(name){root.querySelectorAll('[data-v]').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-v')===name);});}
+function goView(name){var v=VIEWS[name];VT={yaw:v.yaw*DEG,raw:v.el*DEG};markView(name);}
+var drag=null;
+cv.addEventListener('pointerdown',function(ev){
+  drag={x:ev.clientX,y:ev.clientY};VT=null;markView('');
+  cv.classList.add('drag');try{cv.setPointerCapture(ev.pointerId);}catch(e){}
+});
+cv.addEventListener('pointermove',function(ev){
+  if(!drag)return;
+  var dx=ev.clientX-drag.x,dy=ev.clientY-drag.y;drag.x=ev.clientX;drag.y=ev.clientY;
+  V.yaw-=dx*0.009;
+  V.raw=Math.max(-89*DEG,Math.min(90*DEG,V.raw+dy*0.009));
+  V.el=effEl(V.raw);
+});
+function endDrag(){drag=null;cv.classList.remove('drag');}
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('dblclick',function(){goView(DEFAULT_VIEW);});
+root.querySelectorAll('[data-v]').forEach(function(b){
+  b.addEventListener('click',function(){goView(b.getAttribute('data-v'));});
+});
+
+/* ---------------- 컨트롤 ---------------- */
+function fmtRpm(v){return (v>0?'+':'')+v+' rpm';}
+root.querySelectorAll('[data-k]').forEach(function(el){
+  el.addEventListener(el.tagName==='SELECT'?'change':'input',function(){
+    var k=el.getAttribute('data-k'),v=el.value;
+    if(k==='preset'){var p=PRESETS[+v];st.zf=p[0];st.zc=p[1];}
+    else if(k==='rpm'){st.rpm=+v;$('[data-o="rpm"]').textContent=fmtRpm(st.rpm);}
+    else if(k==='explode'){st.explode=v/100;$('[data-o="exp"]').textContent=v+'%';}
+  });
+});
+var btnPlay=$('[data-b="play"]');
+btnPlay.addEventListener('click',function(){
+  st.playing=!st.playing;btnPlay.textContent=st.playing?'❚❚ 일시정지':'▶ 재생';
+});
+$('[data-b="reset"]').addEventListener('click',function(){st.thw=0;});
+
+function resize(){
+  var r=cv.parentElement.getBoundingClientRect();
+  W=Math.max(260,r.width);
+  var ctrlH=($('.hd-ctrl').getBoundingClientRect().height||60);
+  H=Math.round(Math.max(360,Math.min(W*0.82,window.innerHeight-ctrlH-30)));
+  dpr=window.devicePixelRatio||1;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.height=H+'px';
+}
+if(window.ResizeObserver)new ResizeObserver(resize).observe(cv.parentElement);
+window.addEventListener('resize',resize);
+
+var last=performance.now();
+function frame(now){
+  var dt=Math.min(0.05,(now-last)/1000);last=now;
+  if(st.playing)st.thw+=st.rpm*TAU/60*dt;     // 입력(WG)만 적분, FS 각도는 맞물림 조건으로 계산
+  st.ev+=(st.explode-st.ev)*Math.min(1,dt*8);
+  if(VT){
+    var f=Math.min(1,dt*7),dy=VT.yaw-V.yaw;
+    dy=Math.atan2(Math.sin(dy),Math.cos(dy));
+    V.yaw+=dy*f;V.raw+=(VT.raw-V.raw)*f;V.el=effEl(V.raw);
+    if(Math.abs(dy)<1e-3&&Math.abs(VT.raw-V.raw)<1e-3)VT=null;
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+$('[data-o="rpm"]').textContent=fmtRpm(st.rpm);
+resize();requestAnimationFrame(frame);
+})();
+</script>
+</div>
+<!-- ===================== 티스토리 복사 끝 ===================== -->
+
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>유성기어 시뮬레이터</title>
+</head>
+<body style="margin:0;padding:12px;background:#eef0f3;">
+
+<!-- ===================== 티스토리 복사 시작 ===================== -->
+<div id="pgsim">
+<style>
+#pgsim{
+  --ink:#1f2328;--muted:#656d76;--line:#d8dde3;--soft:#f6f8fa;
+  font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:12px;
+  width:100%;box-sizing:border-box;overflow:hidden;line-height:1.5;font-size:14px;text-align:left;
+}
+#pgsim *{box-sizing:border-box}
+#pgsim .pg-stage{background:var(--soft);position:relative}
+#pgsim .pg-canvas{display:block;width:100%;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+#pgsim .pg-canvas.drag{cursor:grabbing}
+#pgsim .pg-view{position:absolute;top:8px;right:8px;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+#pgsim .pg-view button{padding:3px 9px;font-size:12px;background:rgba(255,255,255,.92)}
+#pgsim .pg-view button.on{background:#ddf4ff;border-color:#9cc9f2;color:#0969da}
+#pgsim .pg-ctrl{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+#pgsim .pg-grp{display:flex;align-items:center;gap:8px;font-size:13px}
+#pgsim .pg-grp > span{color:var(--muted)}
+#pgsim .pg-grp b{font-variant-numeric:tabular-nums;min-width:58px;display:inline-block}
+#pgsim .pg-fix{font-size:12.5px;color:var(--muted)}
+#pgsim .pg-fix em{font-style:normal;font-weight:600;padding:1px 7px;border-radius:10px;margin:0 2px}
+#pgsim .t-fixed{background:#eaeef2;color:#57606a}
+#pgsim .t-input{background:#ddf4ff;color:#0969da}
+#pgsim .t-output{background:#dafbe1;color:#1a7f37}
+#pgsim select{font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+#pgsim input[type=range]{width:140px;margin:0;accent-color:#3c6fbb}
+#pgsim button{font:inherit;font-size:13px;padding:4px 11px;border:1px solid var(--line);border-radius:6px;background:var(--soft);color:var(--ink);cursor:pointer}
+#pgsim button:hover{background:#eaeef2}
+#pgsim .pg-btns{display:flex;gap:6px;margin-left:auto}
+@media (max-width:560px){#pgsim input[type=range]{width:110px}#pgsim .pg-btns{margin-left:0}}
+</style>
+
+<div class="pg-stage">
+  <canvas class="pg-canvas" aria-label="유성기어 3D 애니메이션 (드래그로 시점 회전)"></canvas>
+  <div class="pg-view">
+    <button type="button" data-v="top">위에서</button>
+    <button type="button" data-v="iso" class="on">비스듬히</button>
+    <button type="button" data-v="side">옆에서</button>
+    <button type="button" data-v="bottom">아래에서</button>
+  </div>
+</div>
+
+<div class="pg-ctrl">
+  <div class="pg-fix">링기어 <em class="t-fixed">고정</em> · 선기어 <em class="t-input">입력</em> → 캐리어 <em class="t-output">출력</em></div>
+  <label class="pg-grp"><span>잇수 Zs/Zp/Zr</span>
+    <select data-k="preset">
+      <option value="0" selected>12 / 18 / 48</option>
+      <option value="1">18 / 15 / 48</option>
+      <option value="2">24 / 12 / 48</option>
+      <option value="3">12 / 24 / 60</option>
+    </select></label>
+  <label class="pg-grp"><span>입력 속도</span>
+    <input type="range" data-k="rpm" min="-30" max="30" step="1" value="10"><b data-o="rpm"></b></label>
+  <label class="pg-grp"><span>분해 정도</span>
+    <input type="range" data-k="explode" min="0" max="100" step="1" value="0"><b data-o="exp">0%</b></label>
+  <div class="pg-btns">
+    <button type="button" data-b="play">❚❚ 일시정지</button>
+    <button type="button" data-b="reset">↺ 처음 위치</button>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var root=document.getElementById('pgsim');
+if(!root)return;
+var $=function(s){return root.querySelector(s);};
+var cv=$('.pg-canvas'), ctx=cv.getContext('2d');
+var TAU=Math.PI*2, DEG=Math.PI/180, NP=3;
+
+var C={
+  sun:    {fill:'#f2a65a',edge:'#b4601b',side:'#c8722a',hi:'#f8c99a'},
+  planet: {fill:'#74a6ea',edge:'#2a5ca6',side:'#3f72bd',hi:'#b4d0f5'},
+  ring:   {fill:'#c6ccd3',edge:'#6e7781',side:'#8f979f',hi:'#e3e7eb'},
+  carrier:{fill:'#5cc27f',edge:'#1d7a3a',side:'#2f9a52',hi:'#a6e2b9'},
+  pin:    {fill:'#d9dde2',edge:'#57606a',side:'#8c949d',hi:'#f4f6f8'}
+};
+var PRESETS=[[12,18],[18,15],[24,12],[12,24]];   // (Zs+Zp)이 3의 배수 → 유성기어 3개 등간격 조립 가능
+var VIEWS={top:{yaw:0,el:90},iso:{yaw:-25,el:38},side:{yaw:0,el:6},bottom:{yaw:-25,el:-38}};
+
+var st={zs:12,zp:18,zr:48,rpm:10,explode:0,ev:0,playing:true,ths:0,thc:0,ws:0,wc:0};
+var V={yaw:VIEWS.iso.yaw*DEG,raw:VIEWS.iso.el*DEG,el:VIEWS.iso.el*DEG}, VT=null;
+
+// 링기어 고정: Zs·ωs = (Zs+Zr)·ωc
+function solve(){st.ws=st.rpm;st.wc=st.zs*st.rpm/(st.zs+st.zr);}
+
+// 선기어·캐리어 각도에서 유성기어·링기어 각도를 맞물림 조건으로 계산
+function angles(){
+  var zs=st.zs,zp=st.zp,zr=st.zr,pl=[],i;
+  for(i=0;i<NP;i++){
+    var phi=st.thc+TAU*i/NP;
+    pl.push({phi:phi,thp:phi+Math.PI-Math.PI/zp+(zs/zp)*(phi-st.ths)});
+  }
+  var thr=pl[0].phi-(zp/zr)*(pl[0].phi-pl[0].thp)-Math.PI/zr;
+  return {ths:st.ths,thc:st.thc,thr:thr,pl:pl};
+}
+
+/* ---------------- 3D 직교 투영 ----------------
+   축(z)은 화면에서 항상 수직. yaw = 축 둘레 회전, el = 올려다본/내려다본 각도.
+   z = const 평면 위의 도형은 아핀 변환이므로 2D 경로를 그대로 쓸 수 있음. */
+var W=300,H=300,dpr=1,S=1,CX=0,CY=0,cps=1,sps=0,ce=0,se=1;
+function setZ(z){ctx.setTransform(dpr*S*cps,-dpr*S*se*sps,-dpr*S*sps,-dpr*S*se*cps,dpr*CX,dpr*(CY-S*z*ce));}
+function P(x,y,z){return [CX+S*(x*cps-y*sps),CY-S*(z*ce+se*(x*sps+y*cps))];}
+function screenId(){ctx.setTransform(dpr,0,0,dpr,0,0);}
+
+/* ---------------- 형상 ---------------- */
+var HP=0.70, TG=5, TC=2.5, GAP=0.8, LUG=4.5;
+function extGearPath(Z,th,x,y,holeR){
+  var r=Z/2,ra=r+1,rf=r-1.25,ha=(HP-0.364)/ra,hf=(HP+0.455)/rf,k,j;
+  ctx.beginPath();
+  for(k=0;k<Z;k++){
+    var c=th+TAU*k/Z,p=[[rf,c-hf],[ra,c-ha],[ra,c+ha],[rf,c+hf]];
+    for(j=0;j<4;j++){
+      var X=x+p[j][0]*Math.cos(p[j][1]),Y=y+p[j][0]*Math.sin(p[j][1]);
+      if(k===0&&j===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);
+    }
+  }
+  ctx.closePath();
+  if(holeR){ctx.moveTo(x+holeR,y);ctx.arc(x,y,holeR,0,TAU);ctx.closePath();}
+}
+function ringOuter(){return st.zr/2+4.25;}
+// 링기어: 바깥에 고정용 브래킷(볼트 구멍) 4개
+function ringPath(Z,th){
+  var r=Z/2,ri=r-1,ro=r+1.25,Ro=ringOuter(),hi=(HP-0.364)/ri,ho=(HP+0.455)/ro,k,j,i;
+  var w=0.2,M=360;
+  ctx.beginPath();
+  for(i=0;i<=M;i++){
+    var a=TAU*i/M,d=((a-Math.PI/4)%(Math.PI/2)+Math.PI/2)%(Math.PI/2); if(d>Math.PI/4)d-=Math.PI/2;
+    var u=Math.abs(d)/w,rr=Ro+(u<1?LUG*Math.sqrt(1-u*u):0);
+    if(i===0)ctx.moveTo(rr*Math.cos(a),rr*Math.sin(a));else ctx.lineTo(rr*Math.cos(a),rr*Math.sin(a));
+  }
+  ctx.closePath();
+  for(i=0;i<4;i++){
+    var b=Math.PI/4+i*Math.PI/2,bx=(Ro+LUG*0.45)*Math.cos(b),by=(Ro+LUG*0.45)*Math.sin(b),br=LUG*0.26;
+    ctx.moveTo(bx+br,by);ctx.arc(bx,by,br,0,TAU);ctx.closePath();
+  }
+  for(k=0;k<Z;k++){
+    var c=th+TAU*k/Z,p=[[ro,c-ho],[ri,c-hi],[ri,c+hi],[ro,c+ho]];
+    for(j=0;j<4;j++){
+      var X=p[j][0]*Math.cos(p[j][1]),Y=p[j][0]*Math.sin(p[j][1]);
+      if(k===0&&j===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);
+    }
+  }
+  ctx.closePath();
+}
+function carrierPath(thc,a,armW,hubR){
+  var i;
+  ctx.beginPath();
+  for(i=0;i<NP;i++){
+    var f=thc+TAU*i/NP,x1=a*Math.cos(f),y1=a*Math.sin(f);
+    ctx.moveTo(armW*Math.cos(f+Math.PI/2),armW*Math.sin(f+Math.PI/2));
+    ctx.arc(0,0,armW,f+Math.PI/2,f+1.5*Math.PI);
+    ctx.arc(x1,y1,armW,f-Math.PI/2,f+Math.PI/2);
+    ctx.closePath();
+  }
+  ctx.moveTo(hubR,0);ctx.arc(0,0,hubR,0,TAU);ctx.closePath();
+}
+function marker(x,y,th,r0,r1){
+  ctx.beginPath();
+  ctx.moveTo(x+r0*Math.cos(th),y+r0*Math.sin(th));
+  ctx.lineTo(x+r1*Math.cos(th),y+r1*Math.sin(th));
+  ctx.strokeStyle='#ffffff';ctx.lineWidth=2.8/S;ctx.lineCap='round';ctx.stroke();
+}
+// 두께 있는 판: 먼 면 → 가까운 면 순으로 옆면을 쌓고, 보이는 면에 디테일
+function solid(z0,T,pathFn,col,rule,detail){
+  var sidePx=T*S*Math.abs(ce),n=sidePx<0.6?0:Math.min(48,Math.ceil(sidePx/1.1)),i;
+  var far=se>=0?z0:z0+T,near=se>=0?z0+T:z0;
+  for(i=0;i<n;i++){setZ(far+(near-far)*i/n);pathFn();ctx.fillStyle=col.side;ctx.fill(rule);}
+  setZ(near);pathFn();
+  ctx.fillStyle=col.fill;ctx.fill(rule);
+  ctx.strokeStyle=col.edge;ctx.lineWidth=1.1/S;ctx.lineJoin='round';ctx.stroke();
+  if(detail)detail();
+}
+// 축 방향 원기둥 (축은 화면에서 항상 수직이므로 옆면은 직사각형)
+function cylinder(x,y,z1,z2,r,col,th){
+  var far=se>=0?z1:z2,near=se>=0?z2:z1;
+  setZ(far);ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fillStyle=col.side;ctx.fill();
+  var p1=P(x,y,z1),p2=P(x,y,z2),x0=p1[0]-S*r,x1=p1[0]+S*r,ya=Math.min(p1[1],p2[1]),yb=Math.max(p1[1],p2[1]);
+  screenId();
+  if(yb-ya>0.3){
+    var gr=ctx.createLinearGradient(x0,0,x1,0);
+    gr.addColorStop(0,col.side);gr.addColorStop(0.35,col.hi);gr.addColorStop(1,col.side);
+    ctx.fillStyle=gr;ctx.fillRect(x0,ya,x1-x0,yb-ya);
+    ctx.strokeStyle=col.edge;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x0,ya);ctx.lineTo(x0,yb);ctx.moveTo(x1,ya);ctx.lineTo(x1,yb);ctx.stroke();
+  }
+  setZ(near);ctx.beginPath();ctx.arc(x,y,r,0,TAU);
+  ctx.fillStyle=col.fill;ctx.fill();ctx.strokeStyle=col.edge;ctx.lineWidth=1.1/S;ctx.stroke();
+  if(th!==undefined)marker(x,y,th,0,r*0.82);
+}
+function ease(t){return t*t*(3-2*t);}
+
+/* 분해 시 각 부품의 축 방향 위치 (아래면 z) */
+function geo(){
+  var R=ringOuter(),D=st.ev*(0.32*R+7),Ls=0.3*R+5;
+  var g={R:R,Rmax:R+LUG,D:D,Ls:Ls,ring:0,sun:-D,planet:D,carrier:TG+GAP+2*D};
+  g.pinTip=g.carrier-GAP-TG;              // 캐리어 핀은 캐리어에 고정, 유성기어 두께만큼 아래로
+  g.zmin=g.sun-Ls; g.zmax=g.carrier+TC+Ls;
+  return g;
+}
+
+function draw(){
+  screenId();ctx.clearRect(0,0,W,H);
+  cps=Math.cos(V.yaw);sps=Math.sin(V.yaw);ce=Math.cos(V.el);se=Math.sin(V.el);
+  var A=angles(),g=geo(),t=ease(Math.min(1,st.ev*2.5));
+  var zs=st.zs,zp=st.zp,zr=st.zr,rs=zs/2,rp=zp/2,a=rs+rp;
+  var vis=t*Math.max(0,Math.min(1,(Math.abs(ce)-0.25)/0.3));   // 라벨 표시 정도 (위/아래에서 볼 땐 숨김)
+  var labelRoom=vis*Math.min(210,W*0.3);
+  var Zspan=g.zmax-g.zmin,zmid=(g.zmax+g.zmin)/2;
+  S=Math.min((W*0.94-labelRoom)/(2*g.Rmax),H*0.93/Math.sqrt(4*g.Rmax*g.Rmax+Zspan*Zspan));
+  CX=(W-labelRoom)/2;CY=H/2+S*zmid*ce;
+
+  var pinR=rp*0.2, armW=Math.max(1.4,rp*0.3), hubR=Math.max(2.2,(rs-1.25)*0.5);
+  var inR=Math.max(1.3,(rs-1.25)*0.36), outR=hubR*0.7;
+
+  /* 깊이 정렬: 기어(판)는 두께 방향으로 얇은 층 단위로 쪼개서 모든 부품의 층을 함께 정렬.
+     → 같은 높이에 맞물린 링·선·유성기어도 서로 올바르게 가려짐 */
+  var sgn=se>=0?1:-1, items=[];
+  function dep(x,y){return -(x*sps+y*cps)*ce;}
+  function addSolid(z0,T,pri,x,y,pathFn,col,rule,detail){
+    var sidePx=T*S*Math.abs(ce),n=sidePx<0.6?0:Math.min(48,Math.ceil(sidePx/1.1)),i,d=dep(x,y);
+    var far=sgn>0?z0:z0+T,near=sgn>0?z0+T:z0;
+    for(i=0;i<n;i++)(function(z){
+      items.push({s:z*sgn,t:1,pri:pri,d:d,fn:function(){setZ(z);pathFn();ctx.fillStyle=col.side;ctx.fill(rule);}});
+    })(far+(near-far)*i/n);
+    items.push({s:near*sgn,t:2,pri:pri,d:d,fn:function(){
+      setZ(near);pathFn();ctx.fillStyle=col.fill;ctx.fill(rule);
+      ctx.strokeStyle=col.edge;ctx.lineWidth=1.1/S;ctx.lineJoin='round';ctx.stroke();
+      if(detail)detail();
+    }});
+  }
+  // 원기둥은 통째로: 가까운 쪽 끝 높이를 키로 사용 (같은 높이면 판보다 먼저)
+  function addCyl(x,y,z1,z2,r,col,th){
+    items.push({s:(sgn>0?z2:z1)*sgn,t:0,pri:0,d:dep(x,y),fn:function(){cylinder(x,y,z1,z2,r,col,th);}});
+  }
+
+  addSolid(g.ring,TG,0,0,0,function(){ringPath(zr,A.thr);},C.ring,'evenodd',function(){marker(0,0,A.thr,zr/2+1.8,g.R-0.7);});
+  addSolid(g.sun,TG,1,0,0,function(){extGearPath(zs,A.ths,0,0,0);},C.sun,'evenodd',function(){marker(0,0,A.ths,inR+0.5,rs-1.6);});
+  addCyl(0,0,g.sun-g.Ls,g.sun,inR,C.sun,A.ths);
+  A.pl.forEach(function(p){
+    var x=a*Math.cos(p.phi),y=a*Math.sin(p.phi);
+    addSolid(g.planet,TG,2,x,y,function(){extGearPath(zp,p.thp,x,y,pinR);},C.planet,'evenodd',function(){marker(x,y,p.thp,pinR+0.7,rp-1.6);});
+    var zl=Math.max(g.pinTip,g.planet+TG),zh=g.carrier;   // 유성기어 안에 묻힌 부분은 그리지 않음
+    if(zh-zl>0.02)addCyl(x,y,zl,zh,pinR,C.pin);
+  });
+  addSolid(g.carrier,TC,3,0,0,function(){carrierPath(A.thc,a,armW,hubR);},C.carrier,'nonzero',function(){
+    A.pl.forEach(function(p){
+      ctx.beginPath();ctx.arc(a*Math.cos(p.phi),a*Math.sin(p.phi),pinR,0,TAU);
+      ctx.fillStyle=C.pin.side;ctx.fill();
+    });
+    marker(0,0,A.thc,hubR+0.3,a-armW*0.2);
+  });
+  addCyl(0,0,g.carrier+TC,g.carrier+TC+g.Ls,outR,C.carrier,A.thc);
+
+  items.sort(function(p,q){
+    var ds=p.s-q.s;
+    if(Math.abs(ds)>1e-6)return ds;          // 먼 층부터
+    if(p.t!==q.t)return p.t-q.t;            // 같은 높이: 원기둥 → 옆면 층 → 윗면
+    if(p.pri!==q.pri)return p.pri-q.pri;    // 바깥(링) → 안쪽(선·유성)
+    return p.d-q.d;
+  });
+  items.forEach(function(o){o.fn();});
+
+  /* ---------- 오버레이 ---------- */
+  screenId();
+  var font='"Malgun Gothic","Apple SD Gothic Neo",sans-serif';
+  if(t>0.02){
+    ctx.save();ctx.globalAlpha=0.6*t;ctx.setLineDash([5,4]);ctx.lineWidth=1.2;
+    var p1=P(0,0,g.zmin-3),p2=P(0,0,g.zmax+3);
+    ctx.strokeStyle='#57606a';ctx.beginPath();ctx.moveTo(p1[0],p1[1]);ctx.lineTo(p2[0],p2[1]);ctx.stroke();
+    ctx.strokeStyle=C.planet.edge;
+    A.pl.forEach(function(p){   // 유성기어 중심 ↔ 캐리어 핀 끝
+      var x=a*Math.cos(p.phi),y=a*Math.sin(p.phi),q1=P(x,y,g.planet+TG/2),q2=P(x,y,g.pinTip);
+      ctx.beginPath();ctx.moveTo(q1[0],q1[1]);ctx.lineTo(q2[0],q2[1]);ctx.stroke();
+    });
+    ctx.restore();
+  }
+  if(vis>0.01){
+    var lx=CX+S*g.Rmax+18;
+    var labels=[
+      {c:C.carrier,z:g.carrier+TC/2,r:a+armW,name:'캐리어 (Carrier)',sub:'출력 · 핀 3개로 유성기어 지지'},
+      {c:C.planet,z:g.planet+TG/2,r:a+rp+1,name:'유성기어 ×3 (Planet)',sub:'캐리어 핀에 끼워져 자전 + 공전'},
+      {c:C.ring,z:g.ring+TG/2,r:g.Rmax,name:'링기어 (Ring)',sub:'고정 · 브래킷으로 하우징에 체결'},
+      {c:C.sun,z:g.sun+TG/2,r:rs+1,name:'선기어 (Sun)',sub:'입력 · 입력축과 일체'}
+    ];
+    ctx.save();ctx.globalAlpha=vis;ctx.textBaseline='alphabetic';
+    labels.forEach(function(it){
+      var y=P(0,0,it.z)[1];
+      ctx.setLineDash([2,3]);ctx.strokeStyle='#9aa3ad';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(CX+S*it.r+4,y);ctx.lineTo(lx-6,y);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle=it.c.edge;ctx.font='700 14px '+font;ctx.fillText(it.name,lx,y-1);
+      ctx.fillStyle='#656d76';ctx.font='12px '+font;ctx.fillText(it.sub,lx,y+15);
+    });
+    // 축 라벨
+    ctx.font='700 12.5px '+font;
+    var q=P(0,0,g.zmax-g.Ls*0.35);ctx.fillStyle=C.carrier.edge;ctx.fillText('출력축',q[0]+S*outR+8,q[1]+4);
+    q=P(0,0,g.zmin+g.Ls*0.35);ctx.fillStyle=C.sun.edge;ctx.fillText('입력축',q[0]+S*inR+8,q[1]+4);
+    ctx.restore();
+  }
+  if(t<0.98){
+    ctx.save();ctx.globalAlpha=1-t;ctx.font='13px '+font;ctx.textBaseline='middle';
+    [['선기어 · 입력',C.sun],['유성기어 · 자전+공전',C.planet],['캐리어 · 출력',C.carrier],['링기어 · 고정',C.ring],['축 · 캐리어 핀',C.pin]].forEach(function(it,i){
+      var y=18+i*20;
+      ctx.fillStyle=it[1].fill;ctx.strokeStyle=it[1].edge;ctx.lineWidth=1;
+      ctx.beginPath();ctx.rect(14,y-6,12,12);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#1f2328';ctx.fillText(it[0],32,y);
+    });
+    ctx.restore();
+  }
+  ctx.font='12px '+font;ctx.fillStyle='#8c959f';ctx.textBaseline='alphabetic';
+  ctx.fillText('드래그: 시점 회전 · 더블클릭: 기본 시점',12,H-10);
+}
+
+/* ---------------- 시점 조작 ---------------- */
+function effEl(raw){var m=5*DEG;return raw>=0?Math.max(raw,m):Math.min(raw,-m);}
+function markView(name){root.querySelectorAll('[data-v]').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-v')===name);});}
+function goView(name){var v=VIEWS[name];VT={yaw:v.yaw*DEG,raw:v.el*DEG};markView(name);}
+var drag=null;
+cv.addEventListener('pointerdown',function(ev){
+  drag={x:ev.clientX,y:ev.clientY};VT=null;markView('');
+  cv.classList.add('drag');try{cv.setPointerCapture(ev.pointerId);}catch(e){}
+});
+cv.addEventListener('pointermove',function(ev){
+  if(!drag)return;
+  var dx=ev.clientX-drag.x,dy=ev.clientY-drag.y;drag.x=ev.clientX;drag.y=ev.clientY;
+  V.yaw-=dx*0.009;
+  V.raw=Math.max(-89*DEG,Math.min(90*DEG,V.raw+dy*0.009));
+  V.el=effEl(V.raw);
+});
+function endDrag(){drag=null;cv.classList.remove('drag');}
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('dblclick',function(){goView('iso');});
+root.querySelectorAll('[data-v]').forEach(function(b){
+  b.addEventListener('click',function(){goView(b.getAttribute('data-v'));});
+});
+
+/* ---------------- 컨트롤 ---------------- */
+function fmtRpm(v){return (v>0?'+':'')+v+' rpm';}
+root.querySelectorAll('[data-k]').forEach(function(el){
+  el.addEventListener(el.tagName==='SELECT'?'change':'input',function(){
+    var k=el.getAttribute('data-k'),v=el.value;
+    if(k==='preset'){var p=PRESETS[+v];st.zs=p[0];st.zp=p[1];st.zr=p[0]+2*p[1];}
+    else if(k==='rpm'){st.rpm=+v;$('[data-o="rpm"]').textContent=fmtRpm(st.rpm);}
+    else if(k==='explode'){st.explode=v/100;$('[data-o="exp"]').textContent=v+'%';}
+    solve();
+  });
+});
+var btnPlay=$('[data-b="play"]');
+btnPlay.addEventListener('click',function(){
+  st.playing=!st.playing;btnPlay.textContent=st.playing?'❚❚ 일시정지':'▶ 재생';
+});
+$('[data-b="reset"]').addEventListener('click',function(){st.ths=0;st.thc=0;});
+
+function resize(){
+  var r=cv.parentElement.getBoundingClientRect();
+  W=Math.max(260,r.width);
+  var ctrlH=($('.pg-ctrl').getBoundingClientRect().height||60);
+  H=Math.round(Math.max(360,Math.min(W*0.82,window.innerHeight-ctrlH-30)));
+  dpr=window.devicePixelRatio||1;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.height=H+'px';
+}
+if(window.ResizeObserver)new ResizeObserver(resize).observe(cv.parentElement);
+window.addEventListener('resize',resize);
+
+var last=performance.now();
+function frame(now){
+  var dt=Math.min(0.05,(now-last)/1000);last=now;
+  if(st.playing){var k=TAU/60;st.ths+=st.ws*k*dt;st.thc+=st.wc*k*dt;}
+  st.ev+=(st.explode-st.ev)*Math.min(1,dt*8);
+  if(VT){
+    var f=Math.min(1,dt*7),dy=VT.yaw-V.yaw;
+    dy=Math.atan2(Math.sin(dy),Math.cos(dy));
+    V.yaw+=dy*f;V.raw+=(VT.raw-V.raw)*f;V.el=effEl(V.raw);
+    if(Math.abs(dy)<1e-3&&Math.abs(VT.raw-V.raw)<1e-3)VT=null;
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+$('[data-o="rpm"]').textContent=fmtRpm(st.rpm);
+solve();resize();requestAnimationFrame(frame);
+})();
+</script>
+</div>
+<!-- ===================== 티스토리 복사 끝 ===================== -->
+
+</body>
+</html>
