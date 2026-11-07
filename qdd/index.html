@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QDD 액추에이터 구조 시뮬레이터</title>
+</head>
+<body style="margin:0;padding:12px;background:#eef0f3;">
+<!-- ===== 티스토리 복사 시작 ===== -->
+<div id="qdd-sim">
+<style>
+#qdd-sim{background:#f7f8fa;color:#1f2937;border:1px solid #e2e6eb;border-radius:12px;padding:10px;box-sizing:border-box;font-family:Pretendard,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;line-height:1.4;max-width:100%;}
+#qdd-sim *{box-sizing:border-box;}
+#qdd-sim .qs-stage{position:relative;width:100%;background:#ffffff;border-radius:9px;overflow:hidden;border:1px solid #e8ebef;}
+#qdd-sim canvas{display:block;width:100%;touch-action:none;cursor:grab;}
+#qdd-sim canvas.drag{cursor:grabbing;}
+#qdd-sim .qs-views{position:absolute;top:8px;right:8px;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;}
+#qdd-sim .qs-views button{font:inherit;font-size:12px;padding:4px 9px;border:1px solid #d5dae1;background:rgba(255,255,255,.92);color:#374151;border-radius:6px;cursor:pointer;}
+#qdd-sim .qs-views button:hover{background:#eef2f7;}
+#qdd-sim .qs-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:9px 4px 2px;font-size:13px;}
+#qdd-sim .qs-cfg{display:flex;align-items:center;gap:4px;flex-wrap:wrap;color:#374151;}
+#qdd-sim .qs-tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;color:#fff;}
+#qdd-sim .qs-tag.fix{background:#7a8594;}
+#qdd-sim .qs-tag.in{background:#e07f1f;}
+#qdd-sim .qs-tag.out{background:#23a35a;}
+#qdd-sim label{display:flex;align-items:center;gap:6px;color:#374151;white-space:nowrap;}
+#qdd-sim select{font:inherit;font-size:13px;padding:3px 6px;border:1px solid #cfd5dc;border-radius:6px;background:#fff;color:#1f2937;}
+#qdd-sim input[type=range]{width:120px;accent-color:#e07f1f;margin:0;}
+#qdd-sim output{display:inline-block;min-width:58px;font-variant-numeric:tabular-nums;color:#111827;}
+#qdd-sim .qs-btn{font:inherit;font-size:13px;padding:4px 11px;border:1px solid #cfd5dc;background:#fff;color:#1f2937;border-radius:6px;cursor:pointer;}
+#qdd-sim .qs-btn:hover{background:#eef2f7;}
+</style>
+<div class="qs-stage">
+  <canvas></canvas>
+  <div class="qs-views">
+    <button type="button" data-v="top">위에서</button>
+    <button type="button" data-v="iso">비스듬히</button>
+    <button type="button" data-v="side">옆에서</button>
+    <button type="button" data-v="bottom">아래에서</button>
+  </div>
+</div>
+<div class="qs-bar">
+  <span class="qs-cfg">링기어 <span class="qs-tag fix">고정</span> · 로터=선기어 <span class="qs-tag in">입력</span> → 캐리어 <span class="qs-tag out">출력</span></span>
+  <label>감속비 <select class="qs-preset"></select></label>
+  <label>로터 속도 <input class="qs-spd" type="range" min="-120" max="120" step="1" value="30"><output class="qs-spd-out">30 rpm</output></label>
+  <label>분해 <input class="qs-ex" type="range" min="0" max="100" step="1" value="0"><output class="qs-ex-out">0%</output></label>
+  <button type="button" class="qs-btn qs-pause">일시정지</button>
+  <button type="button" class="qs-btn qs-reset">처음 위치</button>
+</div>
+<script>
+(function(){
+'use strict';
+var root=document.getElementById('qdd-sim'); if(!root) return;
+var stage=root.querySelector('.qs-stage'), cv=root.querySelector('canvas'), ctx=cv.getContext('2d');
+var bar=root.querySelector('.qs-bar');
+var selPreset=root.querySelector('.qs-preset'), rngSpd=root.querySelector('.qs-spd'), outSpd=root.querySelector('.qs-spd-out');
+var rngEx=root.querySelector('.qs-ex'), outEx=root.querySelector('.qs-ex-out');
+var btnPause=root.querySelector('.qs-pause'), btnReset=root.querySelector('.qs-reset');
+var TAU=Math.PI*2, D2R=Math.PI/180;
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+/* ---------- 색 ---------- */
+var PAL={
+  inp:{fill:'#f6a04d',edge:'#9a4a0b',side:'#d9822b',hi:'#fde2c4'},
+  mid:{fill:'#6aaaf5',edge:'#1d4ed8',side:'#3f86e0',hi:'#dbeafe'},
+  out:{fill:'#5cd08a',edge:'#15803d',side:'#2fae63',hi:'#dcfce7'},
+  fix:{fill:'#cfd6df',edge:'#5f6b7a',side:'#9aa5b3',hi:'#f1f5f9'},
+  hous:{fill:'#e1e5ea',edge:'#6b7280',side:'#b0b7c1',hi:'#f8fafc'},
+  steel:{fill:'#b9c0ca',edge:'#4b5563',side:'#7c8592',hi:'#f1f3f6'},
+  pcb:{fill:'#4a4f8c',edge:'#23264a',side:'#33376a',hi:'#8a8fd0'},
+  chip:{fill:'#2b2f36',edge:'#0b0d10',side:'#1a1d22',hi:'#5b6470'},
+  magN:{fill:'#e0605a',edge:'#8f1d1d',side:'#b83a35'},
+  magS:{fill:'#5b7fcf',edge:'#1e3a8a',side:'#3d5fae'}
+};
+var CU=[188,118,56], RED=[214,48,48], BLU=[44,96,220];
+function rgb(c,k){k=k||1;return 'rgb('+Math.round(c[0]*k)+','+Math.round(c[1]*k)+','+Math.round(c[2]*k)+')';}
+function mix(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+
+/* ---------- 프리셋 (등간격 유성 3개 조립조건 (Zs+Zr)/3 정수) ---------- */
+var PRESETS=[
+  {name:'6 : 1 · Mini Cheetah (20/40/100)',Zs:20,Zp:40,Zr:100},
+  {name:'5 : 1 (24/36/96)',Zs:24,Zp:36,Zr:96},
+  {name:'9 : 1 (12/42/96)',Zs:12,Zp:42,Zr:96}
+];
+PRESETS.forEach(function(p,i){var o=document.createElement('option');o.value=i;o.textContent=p.name;selPreset.appendChild(o);});
+
+/* ---------- 치수 (단위: 기어 모듈 1 = 1) ---------- */
+var G={statIn:61,yoke:64.5,toothHW:1.9,shoeIn:77.2,statOut:80,NS:36,shoeGap:1.4,
+  coilR0:65.6,coilR1:76.6,coilHW:4.4,
+  magR0:81.5,magR1:85,NM:42,PP:21,rotR0:85,rotR1:89,
+  ringOut:55.5,bossOut:61,carR:36,pinR:2.5,boreR:2.7,
+  brgR0:36.5,brgR1:41,housR:96,earR0:86,earC:100,earW:6,boltR:2.6,winR0:64,winR1:91,pcbR:74};
+var RMAX=106;
+// 분해 이동량: 캐리어는 출력 베어링 구멍(지름 73)보다 작아서 앞 하우징을 통과해 맨 위로 빠진다
+var EX={C:110,F:75,P:45,S:0,R:-50,H:-90,B:-120};
+
+/* ---------- 경로 도우미 ---------- */
+function polyPath(p,pts,rev){
+  var n=pts.length,i,q;
+  for(i=0;i<n;i++){q=pts[rev?n-1-i:i]; if(i===0)p.moveTo(q[0],q[1]); else p.lineTo(q[0],q[1]);}
+  p.closePath();
+}
+function circle(p,x,y,r,rev){p.moveTo(x+r,y); if(rev)p.arc(x,y,r,TAU,0,true); else p.arc(x,y,r,0,TAU,false); p.closePath();}
+function annulus(r0,r1){var p=new Path2D();circle(p,0,0,r1,false);circle(p,0,0,r0,true);return p;}
+function rot(pt,a){var c=Math.cos(a),s=Math.sin(a);return [pt[0]*c-pt[1]*s,pt[0]*s+pt[1]*c];}
+function gearPts(Z){
+  var r=Z/2,rr=r-1.25,rt=r+1,hr=1.155/rr,ht=0.336/rt,pts=[],k,c;
+  for(k=0;k<Z;k++){c=TAU*k/Z;
+    pts.push([rr*Math.cos(c-hr),rr*Math.sin(c-hr)],[rt*Math.cos(c-ht),rt*Math.sin(c-ht)],[rt*Math.cos(c+ht),rt*Math.sin(c+ht)],[rr*Math.cos(c+hr),rr*Math.sin(c+hr)]);}
+  return pts;
+}
+function ringPts(Z){
+  var r=Z/2,rr=r+1.25,rt=r-1,hr=1.155/rr,ht=0.336/rt,pts=[],k,c;
+  for(k=0;k<Z;k++){c=TAU*k/Z;
+    pts.push([rr*Math.cos(c-hr),rr*Math.sin(c-hr)],[rt*Math.cos(c-ht),rt*Math.sin(c-ht)],[rt*Math.cos(c+ht),rt*Math.sin(c+ht)],[rr*Math.cos(c+hr),rr*Math.sin(c+hr)]);}
+  return pts;
+}
+function roundRectPts(x0,x1,y0,y1,rr){
+  var pts=[],cs=[[x1-rr,y0+rr,-Math.PI/2],[x1-rr,y1-rr,0],[x0+rr,y1-rr,Math.PI/2],[x0+rr,y0+rr,Math.PI]],i,j,a;
+  for(i=0;i<4;i++)for(j=0;j<=4;j++){a=cs[i][2]+j*Math.PI/8;pts.push([cs[i][0]+rr*Math.cos(a),cs[i][1]+rr*Math.sin(a)]);}
+  return pts;
+}
+var EAR_ANG=[90*D2R,210*D2R,330*D2R];
+function housingPath(inner,windows){
+  var p=new Path2D(),i,j,pts=[],R=G.housR,w=G.earW,dt=Math.asin(w/R),xc=Math.sqrt(R*R-w*w),ne=EAR_ANG.length;
+  // 바깥 윤곽 = 원호 + 체결 귀를 하나의 다각형으로 (겹친 선이 안 보이게)
+  for(i=0;i<ne;i++){
+    var a0=EAR_ANG[i]+dt,a1=EAR_ANG[(i+1)%ne]-dt;if(a1<=a0)a1+=TAU;
+    var nseg=Math.ceil((a1-a0)/(2*D2R));for(j=0;j<=nseg;j++){var t=a0+(a1-a0)*j/nseg;pts.push([R*Math.cos(t),R*Math.sin(t)]);}
+    var ea=EAR_ANG[(i+1)%ne],tp=[[xc,-w],[G.earC,-w]];
+    for(j=1;j<12;j++){var u=-Math.PI/2+j*Math.PI/12;tp.push([G.earC+w*Math.cos(u),w*Math.sin(u)]);}
+    tp.push([G.earC,w],[xc,w]);tp.forEach(function(q){pts.push(rot(q,ea));});
+  }
+  polyPath(p,pts,false);
+  EAR_ANG.forEach(function(a){var c=rot([G.earC,0],a);circle(p,c[0],c[1],G.boltR,true);});
+  if(windows){for(i=0;i<6;i++){var c0=i*60*D2R,h=21*D2R; // 창: 0,60,... 중심, 살은 30+60k (귀와 같은 각도)
+    p.moveTo(G.winR1*Math.cos(c0+h),G.winR1*Math.sin(c0+h));
+    p.arc(0,0,G.winR1,c0+h,c0-h,true);
+    p.lineTo(G.winR0*Math.cos(c0-h),G.winR0*Math.sin(c0-h));
+    p.arc(0,0,G.winR0,c0-h,c0+h,false);p.closePath();}}
+  circle(p,0,0,inner,true);
+  return p;
+}
+
+/* ---------- 고정 형상 ---------- */
+var PATH={};
+(function build(){
+  var p,i,k,c,pts=[];
+  // 스테이터 적층 코어: 바깥쪽으로 이(티스)가 난 별 모양
+  var NS=G.NS,pit=TAU/NS,sh=(pit-G.shoeGap/G.statOut)/2;
+  for(k=0;k<NS;k++){c=k*pit;
+    var by=G.toothHW/G.yoke, bs=G.toothHW/G.shoeIn;
+    pts.push([G.yoke*Math.cos(c-by),G.yoke*Math.sin(c-by)],[G.shoeIn*Math.cos(c-bs),G.shoeIn*Math.sin(c-bs)],
+      [G.shoeIn*Math.cos(c-sh),G.shoeIn*Math.sin(c-sh)],[G.statOut*Math.cos(c-sh),G.statOut*Math.sin(c-sh)],
+      [G.statOut*Math.cos(c+sh),G.statOut*Math.sin(c+sh)],[G.shoeIn*Math.cos(c+sh),G.shoeIn*Math.sin(c+sh)],
+      [G.shoeIn*Math.cos(c+bs),G.shoeIn*Math.sin(c+bs)],[G.yoke*Math.cos(c+by),G.yoke*Math.sin(c+by)]);}
+  p=new Path2D();polyPath(p,pts,false);circle(p,0,0,G.statIn,true);PATH.lam=p;
+  // 코일 다각형 (스테이터 좌표)
+  PATH.coilPts=[];var base=roundRectPts(G.coilR0,G.coilR1,-G.coilHW,G.coilHW,1.6);
+  for(k=0;k<NS;k++)PATH.coilPts.push(base.map(function(q){return rot(q,k*pit);}));
+  // 자석 N / S
+  var pN=new Path2D(),pS=new Path2D(),mw=TAU/G.NM*0.42;
+  for(i=0;i<G.NM;i++){c=i*TAU/G.NM;var pp=(i%2===0)?pN:pS;
+    pp.moveTo(G.magR1*Math.cos(c-mw),G.magR1*Math.sin(c-mw));pp.arc(0,0,G.magR1,c-mw,c+mw,false);
+    pp.lineTo(G.magR0*Math.cos(c+mw),G.magR0*Math.sin(c+mw));pp.arc(0,0,G.magR0,c+mw,c-mw,true);pp.closePath();}
+  PATH.magN=pN;PATH.magS=pS;
+  PATH.rotWall=annulus(G.rotR0,G.rotR1);
+  p=new Path2D();circle(p,0,0,G.rotR1,false);
+  for(i=0;i<6;i++){c=(30+60*i)*D2R;circle(p,70*Math.cos(c),70*Math.sin(c),7.5,true);}
+  PATH.rotPlate=p;
+  PATH.boss=annulus(G.ringOut,G.bossOut);
+  PATH.brgOut=annulus(G.brgR0,G.brgR1);
+  PATH.brgRot=annulus(4,9);
+  PATH.housF=housingPath(G.brgR1,true);
+  PATH.housR=housingPath(5,false);
+  p=new Path2D();circle(p,0,0,G.pcbR,false);for(i=0;i<3;i++){c=(90+120*i)*D2R;circle(p,66*Math.cos(c),66*Math.sin(c),2.2,true);}PATH.pcb=p;
+  p=new Path2D();polyPath(p,[[-3.5,-3.5],[3.5,-3.5],[3.5,3.5],[-3.5,3.5]],false);PATH.ic=p;
+  p=new Path2D();circle(p,0,0,G.carR,false);circle(p,0,0,4.5,true);PATH.car=p;
+  PATH.pin=(function(){var q=new Path2D();circle(q,0,0,G.pinR,false);return q;})();
+  PATH.hub=(function(){var q=new Path2D();circle(q,0,0,7,false);return q;})();
+  PATH.shaft=(function(){var q=new Path2D();circle(q,0,0,4,false);return q;})();
+  PATH.encMag=(function(){var q=new Path2D();circle(q,0,0,3,false);return q;})();
+})();
+
+/* ---------- 3상 권선 (슬롯의 별, 집중권) ---------- */
+// 티스 k 의 전기각 ε = PP·α_k. 60° 상대(phase belt)로 나눠 상/부호 결정 → AabBCc 반복
+var WIND=[];(function(){
+  var map=[[0,1],[1,-1],[2,1],[0,-1],[1,1],[2,-1]],k;
+  for(k=0;k<G.NS;k++){var alpha=TAU*k/G.NS,eps=((G.PP*k*360/G.NS)%360+360)%360,j=Math.floor(((eps+15)%360)/60);
+    WIND.push({alpha:alpha,ph:map[j][0],s:map[j][1]});}
+})();
+var EMAX=(function(){var re=0,im=0;WIND.forEach(function(w){if(w.ph===0){re+=w.s*Math.cos(G.PP*w.alpha);im+=w.s*Math.sin(G.PP*w.alpha);}});return Math.hypot(re,im);})();
+// FOC(q축 전류): 각 상 전류 ∝ 그 상의 역기전력. 티스 자화 m_k = −dir·s_k·E_ph/EMAX  (+면 로터를 향해 N극)
+function toothMMF(thR,dir){
+  var E=[0,0,0],m=[],k,w;
+  for(k=0;k<G.NS;k++){w=WIND[k];E[w.ph]+=w.s*Math.sin(G.PP*(w.alpha-thR));}
+  for(k=0;k<G.NS;k++){w=WIND[k];m.push(-dir*w.s*E[w.ph]/EMAX);}
+  return m;
+}
+
+/* ---------- 상태 ---------- */
+var preset=PRESETS[0],Zs,Zp,Zr,ratio,aC,thRing,gearP={};
+var thR=0,rpm=30,lastDir=1,paused=false,exT=0,ev=0;
+var yaw=-25*D2R,el=38*D2R,tgt=null;
+function setPreset(i){
+  preset=PRESETS[i];Zs=preset.Zs;Zp=preset.Zp;Zr=preset.Zr;ratio=1+Zr/Zs;aC=(Zs+Zp)/2;
+  thRing=Math.PI*(Zp-2)/Zr; // 링 위상: k=0 유성기어와 이/홈이 맞도록 (θs=θc=0 기준)
+  var p;
+  p=new Path2D();polyPath(p,gearPts(Zs),false);gearP.sun=p;
+  p=new Path2D();polyPath(p,gearPts(Zp),false);circle(p,0,0,G.boreR,true);gearP.planet=p;
+  p=new Path2D();circle(p,0,0,G.ringOut,false);polyPath(p,ringPts(Zr),true);gearP.ring=p;
+  thR=0;
+}
+// 독립 자유도: 로터(=선기어)각 thR 하나. 링 고정 → 캐리어 = thR/ratio. 유성기어 각은 맞물림 위상식으로 계산
+function carAng(){return thR/ratio;}
+function planetPhi(k){return carAng()+TAU*k/3;}
+function planetAng(k){var ph=planetPhi(k);return ph+Math.PI-Math.PI/Zp+(Zs/Zp)*(ph-thR);}
+
+/* ---------- 부품 목록 ---------- */
+function P0(){return [0,0];}
+function A0(){return 0;}
+function marker(r0,r1){return function(c){mk(c,r0,r1);};}
+function mk(c,r0,r1){
+  c.lineCap='round';
+  c.strokeStyle='rgba(0,0,0,.28)';c.lineWidth=3.6/S;c.beginPath();c.moveTo(r0,0);c.lineTo(r1,0);c.stroke();
+  c.strokeStyle='#ffffff';c.lineWidth=2/S;c.beginPath();c.moveTo(r0,0);c.lineTo(r1,0);c.stroke();
+}
+function screws(R,n,a0,r){return function(c){for(var i=0;i<n;i++){var a=a0+i*TAU/n,x=R*Math.cos(a),y=R*Math.sin(a);
+  c.fillStyle='#8b94a1';c.beginPath();c.arc(x,y,r,0,TAU);c.fill();c.strokeStyle='#4b5563';c.lineWidth=0.8/S;c.stroke();
+  c.fillStyle='#4b5563';c.beginPath();c.arc(x,y,r*0.42,0,TAU);c.fill();}};}
+function balls(R,n,r){return function(c){c.strokeStyle='#5b6470';c.lineWidth=0.7/S;
+  c.beginPath();c.arc(0,0,R-r-0.6,0,TAU);c.stroke();c.beginPath();c.arc(0,0,R+r+0.6,0,TAU);c.stroke();
+  for(var i=0;i<n;i++){var a=i*TAU/n;c.fillStyle='#e9edf1';c.beginPath();c.arc(R*Math.cos(a),R*Math.sin(a),r,0,TAU);c.fill();c.stroke();}};}
+
+var PARTS=[
+  // 앞 하우징 그룹 (고정)
+  {g:'F',z0:18.5,z1:23.5,pr:0,col:PAL.hous,path:function(){return PATH.housF;},face:screws(48,6,0,1.9)},
+  {g:'F',z0:-1,z1:18.5,pr:5,col:PAL.hous,path:function(){return PATH.boss;}},
+  {g:'F',z0:18.5,z1:23.5,pr:1,col:PAL.steel,path:function(){return PATH.brgOut;},face:balls(38.75,22,1.3)},
+  // 캐리어 그룹 (출력)
+  {g:'C',z0:17,z1:22.5,pr:2,col:PAL.out,path:function(){return PATH.car;},ang:carAng,sideMark:[G.carR-0.6,G.carR+0.4],
+    face:function(c){mk(c,7,G.carR-1.5);for(var i=0;i<3;i++){var a=TAU*i/3+Math.PI/3;c.fillStyle='#1f6d3f';c.beginPath();c.arc(22*Math.cos(a),22*Math.sin(a),1.6,0,TAU);c.fill();}}},
+  // 스테이터 + 링기어 (고정)
+  {g:'S',z0:0,z1:16,pr:4,col:PAL.fix,path:function(){return PATH.lam;}},
+  {g:'S',z0:-2,z1:18,pr:3,coil:true},
+  {g:'S',z0:0,z1:16,pr:6,col:PAL.fix,path:function(){return gearP.ring;},ang:function(){return thRing;}},
+  // 로터 그룹 (입력)
+  {g:'R',z0:-4,z1:18,pr:1,col:PAL.inp,path:function(){return PATH.rotWall;},ang:function(){return thR;},sideMark:[G.rotR1-0.6,G.rotR1+0.4],face:marker(G.rotR0+0.3,G.rotR1-0.3)},
+  {g:'R',z0:-3,z1:18,pr:2,mag:true,ang:function(){return thR;}},
+  {g:'R',z0:-8,z1:-4,pr:1,col:PAL.inp,path:function(){return PATH.rotPlate;},ang:function(){return thR;},face:marker(10,G.rotR1-1.5)},
+  {g:'R',z0:-4,z1:0,pr:9,col:PAL.inp,cyl:7,path:function(){return PATH.hub;}},
+  {g:'R',z0:-18,z1:-8,pr:9,col:PAL.steel,cyl:4,path:function(){return PATH.shaft;}},
+  {g:'R',z0:-19.5,z1:-18,pr:9,col:PAL.chip,cyl:3,path:function(){return PATH.encMag;},ang:function(){return thR;},
+    face:function(c){c.fillStyle=PAL.magN.fill;c.beginPath();c.arc(0,0,2.6,-Math.PI/2,Math.PI/2);c.fill();c.fillStyle=PAL.magS.fill;c.beginPath();c.arc(0,0,2.6,Math.PI/2,Math.PI*1.5);c.fill();}},
+  {g:'R',z0:0,z1:16,pr:9,col:PAL.inp,path:function(){return gearP.sun;},ang:function(){return thR;},face:function(c){mk(c,0,Zs/2-1.6);}},
+  // 뒤 하우징 그룹 (고정)
+  {g:'H',z0:-24,z1:-20,pr:0,col:PAL.hous,path:function(){return PATH.housR;},face:screws(48,6,0,1.9)},
+  {g:'H',z0:-20,z1:-14,pr:3,col:PAL.steel,path:function(){return PATH.brgRot;},face:balls(6.5,8,1)},
+  // 드라이버 보드 그룹
+  {g:'B',z0:-28,z1:-26.5,pr:0,col:PAL.pcb,path:function(){return PATH.pcb;},face:pcbFace},
+  {g:'B',z0:-26.5,z1:-25.5,pr:3,col:PAL.chip,path:function(){return PATH.ic;},face:function(c){c.fillStyle='#9aa3af';c.beginPath();c.arc(-2.3,-2.3,0.6,0,TAU);c.fill();}}
+];
+// 유성기어 3개 + 핀 3개
+[0,1,2].forEach(function(k){
+  PARTS.push({g:'P',z0:0.5,z1:15.5,pr:7,col:PAL.mid,path:function(){return gearP.planet;},
+    pos:function(){var ph=planetPhi(k);return [aC*Math.cos(ph),aC*Math.sin(ph)];},ang:function(){return planetAng(k);},
+    face:function(c){mk(c,G.boreR+0.6,Zp/2-1.6);}});
+  PARTS.push({g:'C',z0:0,z1:27.5,pr:8,col:PAL.steel,cyl:G.pinR,path:function(){return PATH.pin;},
+    pos:function(){var ph=planetPhi(k);return [aC*Math.cos(ph),aC*Math.sin(ph)];}});
+});
+function pcbFace(c){
+  var i,a;
+  c.strokeStyle='rgba(220,190,90,.55)';c.lineWidth=0.9/S;c.beginPath();c.arc(0,0,G.pcbR-3,0,TAU);c.stroke();
+  for(i=0;i<6;i++){a=i*TAU/6;c.save();c.rotate(a);
+    c.fillStyle='#1d2027';c.fillRect(46,-4,9,8);c.fillStyle='#c9a646';c.fillRect(55,-3.4,2.4,1.4);c.fillRect(55,-0.7,2.4,1.4);c.fillRect(55,2,2.4,1.4);
+    c.restore();}
+  for(i=0;i<3;i++){a=(30+120*i)*D2R;var x=30*Math.cos(a),y=30*Math.sin(a);
+    c.fillStyle='#c9ced6';c.beginPath();c.arc(x,y,5,0,TAU);c.fill();c.strokeStyle='#5b6470';c.lineWidth=0.8/S;c.stroke();
+    c.beginPath();c.moveTo(x-2.5,y);c.lineTo(x+2.5,y);c.stroke();}
+  c.fillStyle='#1d2027';c.fillRect(-5,15,10,10);c.fillRect(-4,-21,8,6);
+  c.fillStyle='#e5e7eb';c.fillRect(-9,58,18,6);
+  c.fillStyle='#c9a646';for(i=0;i<4;i++)c.fillRect(-7+i*4.2,59.5,2,3);
+}
+
+/* ---------- 투영 ---------- */
+var W=600,H=400,dpr=1,S=2,CX=300,CY=200,cps=1,sps=0,ce=1,se=0;
+function setZ(z){ctx.setTransform(dpr*S*cps,-dpr*S*se*sps,-dpr*S*sps,-dpr*S*se*cps,dpr*CX,dpr*(CY-S*z*ce));}
+function Pt(x,y,z){return [CX+S*(x*cps-y*sps),CY-S*(z*ce+se*(x*sps+y*cps))];}
+
+function resize(){
+  var w=stage.clientWidth||600,bh=bar.offsetHeight||50,ih=window.innerHeight||800;
+  var h=Math.round(Math.max(360,Math.min(w*0.82,ih-bh-30)));
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  W=w;H=h;cv.style.height=h+'px';cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);
+}
+
+/* ---------- 그리기 ---------- */
+var LABELS=[
+  {g:'F',z:21,r:function(){return G.housR;},t:'앞 하우징 · 출력 베어링',d:'고정 — 링기어·스테이터를 붙잡고 캐리어를 받침'},
+  {g:'C',z:22.5,r:function(){return G.carR;},t:'캐리어 (Carrier)',d:'출력 — 앞으로 튀어나온 핀에 다리 링크 체결'},
+  {g:'P',z:8,r:function(){return aC+Zp/2+1;},t:'유성기어 ×3 (Planet)',d:'핀에 끼워져 자전하며 링기어 안을 공전'},
+  {g:'S',z:8,r:function(){return G.statOut;},t:'스테이터 + 링기어',d:'고정 — 링기어가 스테이터 안쪽 빈 공간에 들어감'},
+  {g:'R',z:7,r:function(){return G.rotR1;},t:'로터 + 선기어 (Rotor · Sun)',d:'입력 — 자석 42극, 선기어가 로터 중심에 고정'},
+  {g:'H',z:-22,r:function(){return G.housR;},t:'뒤 하우징 · 로터 베어링',d:'고정 — 로터 축을 받치고 축 끝 자석을 노출'},
+  {g:'B',z:-27,r:function(){return G.pcbR;},t:'드라이버 보드 + 엔코더',d:'FOC 인버터 · 엔코더 IC가 축 끝 자석 각도 측정'}
+];
+var FONT='Pretendard,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif';
+
+function coilShapes(){
+  var dir=rpm>0?1:rpm<0?-1:lastDir,m=toothMMF(thR,dir),bins={},k,lv,key;
+  for(k=0;k<G.NS;k++){lv=Math.round(m[k]*4);key=String(lv);if(!bins[key])bins[key]={lv:lv,p:new Path2D()};polyPath(bins[key].p,PATH.coilPts[k],false);}
+  var out=[];Object.keys(bins).forEach(function(kk){var b=bins[kk],t=b.lv/4,c=mix(CU,t>0?RED:BLU,Math.abs(t)*0.85);
+    out.push({p:b.p,fill:rgb(c),side:rgb(c,0.78),edge:rgb(c,0.5)});});
+  return out;
+}
+var MAGSH=[{p:null,fill:PAL.magN.fill,side:PAL.magN.side,edge:PAL.magN.edge},{p:null,fill:PAL.magS.fill,side:PAL.magS.side,edge:PAL.magS.edge}];
+
+function draw(){
+  cps=Math.cos(yaw);sps=Math.sin(yaw);ce=Math.cos(el);se=Math.sin(el);
+  var sg=se>=0?1:-1;
+  // 장면 z 범위 (분해 정도 반영)
+  var zmin=1e9,zmax=-1e9;PARTS.forEach(function(p){var o=EX[p.g]*ev;zmin=Math.min(zmin,p.z0+o);zmax=Math.max(zmax,p.z1+o);});
+  var vis=ev*clamp((Math.abs(ce)-0.25)/0.3,0,1);
+  var labelRoom=Math.min(250,W*0.42)*vis;
+  S=Math.min((W*0.94-labelRoom)/(2*RMAX),H*0.93/Math.sqrt(4*RMAX*RMAX+(zmax-zmin)*(zmax-zmin)));
+  CX=(W-labelRoom)/2;CY=H/2+S*((zmin+zmax)/2)*ce;
+
+  ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cv.width,cv.height);
+
+  // 층 목록 만들기
+  var items=[],coil=coilShapes();
+  PARTS.forEach(function(p){
+    var o=EX[p.g]*ev,z0=p.z0+o,z1=p.z1+o,pos=p.pos?p.pos():[0,0];
+    var n=clamp(Math.ceil(S*(z1-z0)*Math.abs(ce)/1.1),1,48);
+    var dep=-(pos[0]*sps+pos[1]*cps)*ce,j,z;
+    for(j=0;j<n;j++){z=sg>0?z0+(z1-z0)*j/n:z1-(z1-z0)*j/n;items.push({p:p,z:z,s:z*sg,t:1,first:j===0,pos:pos,dep:dep});}
+    z=sg>0?z1:z0;items.push({p:p,z:z,s:z*sg,t:2,pos:pos,dep:dep});
+  });
+  items.sort(function(a,b){var d=a.s-b.s;if(Math.abs(d)>1e-6)return d;if(a.t!==b.t)return a.t-b.t;if(a.p.pr!==b.p.pr)return a.p.pr-b.p.pr;return a.dep-b.dep;});
+
+  var cylGrad={};
+  items.forEach(function(it){
+    var p=it.p,shapes;
+    setZ(it.z);ctx.translate(it.pos[0],it.pos[1]);
+    var ang=p.ang?p.ang():0;if(ang)ctx.rotate(ang);
+    if(p.coil)shapes=coil;
+    else if(p.mag){MAGSH[0].p=PATH.magN;MAGSH[1].p=PATH.magS;shapes=MAGSH;}
+    else shapes=null;
+    if(it.t===1){
+      if(shapes){shapes.forEach(function(s){ctx.fillStyle=s.side;ctx.fill(s.p);});}
+      else{
+        var path=p.path();
+        if(p.cyl){var key=PARTS.indexOf(p),gr=cylGrad[key];
+          if(!gr){var r=p.cyl,dx=cps,dy=-sps;
+            if(ang){var ca=Math.cos(-ang),sa=Math.sin(-ang),tx=dx*ca-dy*sa;dy=dx*sa+dy*ca;dx=tx;}
+            gr=ctx.createLinearGradient(-r*dx,-r*dy,r*dx,r*dy);
+            gr.addColorStop(0,p.col.edge);gr.addColorStop(0.38,p.col.hi);gr.addColorStop(0.62,p.col.fill);gr.addColorStop(1,p.col.edge);cylGrad[key]=gr;}
+          ctx.fillStyle=gr;}
+        else ctx.fillStyle=p.col.side;
+        ctx.fill(path);
+        if(it.first){ctx.strokeStyle=p.col.edge;ctx.lineWidth=0.7/S;ctx.stroke(path);}
+        if(p.sideMark){ctx.strokeStyle='rgba(255,255,255,.95)';ctx.lineWidth=1.8/S;ctx.beginPath();ctx.moveTo(p.sideMark[0],0);ctx.lineTo(p.sideMark[1],0);ctx.stroke();}
+      }
+    }else{
+      ctx.lineJoin='round';
+      if(shapes){shapes.forEach(function(s){ctx.fillStyle=s.fill;ctx.fill(s.p);ctx.strokeStyle=s.edge;ctx.lineWidth=0.7/S;ctx.stroke(s.p);});}
+      else{var pa=p.path();ctx.fillStyle=p.col.fill;ctx.fill(pa);ctx.strokeStyle=p.col.edge;ctx.lineWidth=0.8/S;ctx.stroke(pa);}
+      if(p.face)p.face(ctx,sg>0);
+    }
+  });
+
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  drawOverlay(zmin,zmax,vis);
+}
+
+function drawOverlay(zmin,zmax,vis){
+  var i,a;
+  // 분해 시 점선: 중심축, 핀 ↔ 유성기어 구멍
+  if(ev>0.04){
+    ctx.save();ctx.globalAlpha=Math.min(1,ev*2)*0.75;ctx.setLineDash([4,4]);ctx.lineWidth=1.2;ctx.strokeStyle='#64748b';
+    var t=Pt(0,0,zmax+6),b=Pt(0,0,zmin-6);ctx.beginPath();ctx.moveTo(t[0],t[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+    ctx.strokeStyle='#2563eb';
+    for(i=0;i<3;i++){var ph=planetPhi(i),x=aC*Math.cos(ph),y=aC*Math.sin(ph);
+      var q0=Pt(x,y,15.5+EX.P*ev),q1=Pt(x,y,0+EX.C*ev);ctx.beginPath();ctx.moveTo(q0[0],q0[1]);ctx.lineTo(q1[0],q1[1]);ctx.stroke();}
+    ctx.restore();
+  }
+  // 라벨
+  if(vis>0.01){
+    ctx.save();ctx.globalAlpha=vis;
+    var lx=CX+S*RMAX+18,arr=LABELS.map(function(L){var z=L.z+EX[L.g]*ev;var y=CY-S*z*ce;return {L:L,y0:y,y:y,x0:CX+S*L.r()+3};});
+    arr.sort(function(p,q){return p.y-q.y;});
+    for(i=1;i<arr.length;i++)if(arr[i].y<arr[i-1].y+31)arr[i].y=arr[i-1].y+31;
+    var over=arr[arr.length-1].y-(H-24);if(over>0)for(i=0;i<arr.length;i++)arr[i].y-=over;
+    arr.forEach(function(o){
+      ctx.setLineDash([3,3]);ctx.strokeStyle='#94a3b8';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(o.x0,o.y0);ctx.lineTo(lx-12,o.y0);ctx.lineTo(lx-4,o.y);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle='#94a3b8';ctx.beginPath();ctx.arc(o.x0,o.y0,2.2,0,TAU);ctx.fill();
+      ctx.textBaseline='alphabetic';ctx.textAlign='left';
+      ctx.fillStyle='#111827';ctx.font='700 12.5px '+FONT;ctx.fillText(o.L.t,lx,o.y-2);
+      ctx.fillStyle='#4b5563';ctx.font='11.5px '+FONT;ctx.fillText(o.L.d,lx,o.y+12);
+    });
+    ctx.restore();
+  }
+  // 축 라벨 (출력 / 전원·통신)
+  ctx.save();ctx.textAlign='center';ctx.font='600 12px '+FONT;
+  var topY=CY-S*(zmax*ce+RMAX*Math.abs(se))-10,botY=CY-S*(zmin*ce-RMAX*Math.abs(se))+20;
+  ctx.fillStyle='#15803d';ctx.fillText('▲ 출력축 (캐리어 → 다리 링크)',CX,Math.max(16,topY));
+  ctx.fillStyle='#6b7280';ctx.fillText('▼ 전원 · CAN 통신선 (드라이버 보드)',CX,Math.min(H-30,botY));
+  ctx.restore();
+  // 범례
+  var la=clamp(1-ev*1.8,0,1);
+  if(la>0.01){
+    ctx.save();ctx.globalAlpha=la;
+    var rows=[[PAL.inp.fill,null,'로터 · 선기어 — 입력 (모터)'],[PAL.mid.fill,null,'유성기어'],[PAL.out.fill,null,'캐리어 — 출력'],[PAL.fix.fill,null,'하우징 · 스테이터 · 링기어 — 고정'],[PAL.magN.fill,PAL.magS.fill,'자석 · 코일 극성: 빨강 N / 파랑 S']];
+    ctx.font='12px '+FONT;var bw=0;rows.forEach(function(r){bw=Math.max(bw,ctx.measureText(r[2]).width);});
+    var x0=10,y0=10,rh=19,bwid=bw+40,bh=rows.length*rh+12;
+    ctx.fillStyle='rgba(255,255,255,.88)';ctx.strokeStyle='#e5e7eb';ctx.lineWidth=1;rr(ctx,x0,y0,bwid,bh,7);ctx.fill();ctx.stroke();
+    rows.forEach(function(r,i){var y=y0+8+i*rh;
+      ctx.fillStyle=r[0];if(r[1]){ctx.fillRect(x0+10,y+2,7,12);ctx.fillStyle=r[1];ctx.fillRect(x0+17,y+2,7,12);}else ctx.fillRect(x0+10,y+2,14,12);
+      ctx.strokeStyle='rgba(0,0,0,.25)';ctx.strokeRect(x0+10.5,y+2.5,13,11);
+      ctx.fillStyle='#1f2937';ctx.textBaseline='middle';ctx.textAlign='left';ctx.fillText(r[2],x0+31,y+8.5);});
+    ctx.restore();
+  }
+  // 힌트
+  ctx.save();ctx.font='11.5px '+FONT;ctx.fillStyle='#8a94a3';ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  ctx.fillText('드래그: 시점 회전 · 더블클릭: 기본 시점',10,H-10);ctx.restore();
+}
+function rr(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);c.arcTo(x+w,y+h,x,y+h,r);c.arcTo(x,y+h,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath();}
+
+/* ---------- 시점 조작 ---------- */
+var VIEWS={top:{y:-25,e:90},iso:{y:-25,e:38},side:{y:-25,e:5},bottom:{y:-25,e:-45}};
+function goView(v){var V=VIEWS[v];tgt={yaw:V.y*D2R,el:V.e*D2R};}
+root.querySelectorAll('.qs-views button').forEach(function(b){b.addEventListener('click',function(){goView(b.getAttribute('data-v'));});});
+var drag=null;
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY};tgt=null;cv.setPointerCapture(e.pointerId);cv.classList.add('drag');});
+cv.addEventListener('pointermove',function(e){if(!drag)return;var dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.x=e.clientX;drag.y=e.clientY;
+  yaw-=dx*0.008;el=clamp(el+dy*0.008,-89*D2R,90*D2R);});
+function endDrag(e){if(!drag)return;drag=null;cv.classList.remove('drag');try{cv.releasePointerCapture(e.pointerId);}catch(_){}}
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('dblclick',function(){goView('iso');});
+function effEl(e){if(Math.abs(e)<5*D2R)return e<0?-5*D2R:5*D2R;return e;}
+
+/* ---------- 컨트롤 ---------- */
+selPreset.addEventListener('change',function(){setPreset(+selPreset.value);});
+rngSpd.addEventListener('input',function(){rpm=+rngSpd.value;if(rpm)lastDir=rpm>0?1:-1;outSpd.textContent=rpm+' rpm';});
+rngEx.addEventListener('input',function(){exT=rngEx.value/100;outEx.textContent=rngEx.value+'%';});
+btnPause.addEventListener('click',function(){paused=!paused;btnPause.textContent=paused?'재생':'일시정지';});
+btnReset.addEventListener('click',function(){thR=0;});
+
+/* ---------- 루프 ---------- */
+var last=null;
+function frame(ts){
+  if(last===null)last=ts;var dt=Math.min(0.05,(ts-last)/1000);last=ts;
+  if(!paused)thR+=rpm*TAU/60*dt;
+  ev+=(exT-ev)*Math.min(1,dt*8);if(Math.abs(exT-ev)<1e-4)ev=exT;
+  if(tgt){var k=Math.min(1,dt*6),dy=Math.atan2(Math.sin(tgt.yaw-yaw),Math.cos(tgt.yaw-yaw));
+    yaw+=dy*k;el+=(tgt.el-el)*k;if(Math.abs(dy)<1e-3&&Math.abs(tgt.el-el)<1e-3){yaw=tgt.yaw;el=tgt.el;tgt=null;}}
+  var e0=el;el=effEl(el);draw();el=e0;
+  requestAnimationFrame(frame);
+}
+setPreset(0);resize();
+window.addEventListener('resize',resize);
+if(window.ResizeObserver)new ResizeObserver(resize).observe(stage);
+requestAnimationFrame(frame);
+// 테스트용 노출 (블로그 동작에는 영향 없음)
+root.__qdd={setState:function(o){if('thR'in o)thR=o.thR;if('ev'in o){ev=exT=o.ev;}if('yaw'in o)yaw=o.yaw*D2R;if('el'in o)el=o.el*D2R;if('paused'in o)paused=o.paused;if('preset'in o){setPreset(o.preset);selPreset.value=o.preset;}tgt=null;}};
+})();
+</script>
+</div>
+<!-- ===== 티스토리 복사 끝 ===== -->
+</body>
+</html>
